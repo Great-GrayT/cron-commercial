@@ -8,7 +8,6 @@ import {
   AnimatedNumber,
   IndustryTreemap,
   SkillsTagCloud,
-
   PostingHeatmap,
   CertsBump,
   CHART_COLORS,
