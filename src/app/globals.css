@@ -4,11 +4,6 @@
    Font: Computer/Terminal Style
    ======================================== */
 
-/* Import computer-style fonts */
-@import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;500;600;700&family=Share+Tech+Mono&family=JetBrains+Mono:wght@300;400;500;600;700&display=swap");
-
-/* Import component styles */
-@import "../components/SearchFilterPanel.css";
 
 :root {
   /* Core Colors - Dark Grey, White, Blue */

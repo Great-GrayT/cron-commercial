@@ -1,5 +1,6 @@
 "use client";
 
+import "./SearchFilterPanel.css";
 import { useState, useMemo, useRef, useEffect } from "react";
 import {
   Search,

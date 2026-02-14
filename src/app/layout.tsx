@@ -13,6 +13,12 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en" suppressHydrationWarning>
+      <head>
+        <link
+          href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;500;600;700&family=Share+Tech+Mono&family=JetBrains+Mono:wght@300;400;500;600;700&display=swap"
+          rel="stylesheet"
+        />
+      </head>
       <body>
         <ThemeProvider>{children}</ThemeProvider>
       </body>
