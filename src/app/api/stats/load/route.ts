@@ -3,6 +3,7 @@ import { getStatsCache, getStorageInfo } from "@/lib/stats-storage";
 import { validateEnvironmentVariables } from "@/lib/validation";
 import { logger } from "@/lib/logger";
 
+export const maxDuration = 300; // 5 minutes timeout
 export const dynamic = "force-dynamic";
 
 /**
@@ -19,6 +20,9 @@ export async function GET(request: NextRequest) {
     // Get query parameters
     const searchParams = request.nextUrl.searchParams;
     const archive = searchParams.get("archive"); // Optional: specific month (YYYY-MM)
+    const page = parseInt(searchParams.get("page") || "1", 10);
+    const limit = Math.min(parseInt(searchParams.get("limit") || "100", 10), 500);
+    const includeJobs = searchParams.get("jobs") !== "false"; // Default: include jobs
 
     // Initialize statistics cache (auto-selects R2 or Gist based on config)
     const statsCache = await getStatsCache();
