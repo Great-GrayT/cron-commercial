@@ -3,23 +3,131 @@
  */
 
 export const certificationPatterns: Array<{ name: string; pattern: RegExp }> = [
-  // Finance & Accounting
-  { name: 'CFA', pattern: /\bCFA\s*(?:Level\s*([I1-3]|One|Two|Three|I{1,3}))?\b/gi },
-  { name: 'ACCA', pattern: /\bACCA\b/gi },
-  { name: 'ACA', pattern: /\bACA\b/gi },
-  { name: 'CIMA', pattern: /\bCIMA\b/gi },
-  { name: 'FRM', pattern: /\bFRM\b/gi },
-  { name: 'CPA', pattern: /\bCPA\b/gi },
-  { name: 'CIA', pattern: /\bCIA\b(?:\s+Certified)?/gi },
-  { name: 'CISA', pattern: /\bCISA\b/gi },
-  { name: 'CFP', pattern: /\bCFP\b|Certified\s+Financial\s+Planner/gi },
-  { name: 'CMA', pattern: /\bCMA\b|Certified\s+Management\s+Accountant/gi },
-  { name: 'EA', pattern: /\bEnrolled\s+Agent\b/gi },
-  { name: 'Series 7', pattern: /\bSeries\s+7\b/gi },
-  { name: 'Series 63', pattern: /\bSeries\s+63\b/gi },
-  { name: 'Series 65', pattern: /\bSeries\s+65\b/gi },
-  { name: 'CAIA', pattern: /\bCAIA\b/gi },
-  { name: 'CTP', pattern: /\bCTP\b|Certified\s+Treasury\s+Professional/gi },
+// Finance & Accounting core
+  {
+    name: 'CFA',
+    pattern: /\b(?:Chartered\s+Financial\s+Analyst|CFA(?:\s+Program)?)(?:\s*(?:charterholder|charter))?(?:\s*(?:Level|Lvl)\s*(?:I{1,3}|1|2|3|One|Two|Three))?\b/gi
+  },
+  {
+    name: 'ACCA',
+    pattern: /\b(?:ACCA|Association\s+of\s+Chartered\s+Certified\s+Accountants|FCCA)\b/gi
+  },
+  {
+    name: 'ACA',
+    pattern: /\b(?:ACA|ICAEW\s+ACA|ICAEW\s+Chartered\s+Accountant|Associate\s+Chartered\s+Accountant)\b/gi
+  },
+  {
+    name: 'CIMA',
+    pattern: /\b(?:CIMA|Chartered\s+Institute\s+of\s+Management\s+Accountants|CGMA|Chartered\s+Global\s+Management\s+Accountant)\b/gi
+  },
+  {
+    name: 'FRM',
+    pattern: /\b(?:FRM|Financial\s+Risk\s+Manager)(?:\s*(?:Part|Pt)\s*(?:I{1,2}|1|2|One|Two))?\b/gi
+  },
+  {
+    name: 'CPA',
+    pattern: /\b(?:CPA|Certified\s+Public\s+Accountant|Uniform\s+CPA\s+Examination)\b/gi
+  },
+  {
+    name: 'CIA',
+    pattern: /\b(?:CIA|Certified\s+Internal\s+Auditor)\b/gi
+  },
+  {
+    name: 'CISA',
+    pattern: /\b(?:CISA|Certified\s+Information\s+Systems\s+Auditor)\b/gi
+  },
+  {
+    name: 'CFP',
+    pattern: /\b(?:CFP|Certified\s+Financial\s+Planner)\b/gi
+  },
+  {
+    name: 'CMA',
+    pattern: /\b(?:CMA|Certified\s+Management\s+Accountant)\b/gi
+  },
+  {
+    name: 'EA',
+    pattern: /\b(?:EA|Enrolled\s+Agent)\b/gi
+  },
+  {
+    name: 'CAIA',
+    pattern: /\b(?:CAIA|Chartered\s+Alternative\s+Investment\s+Analyst)(?:\s*(?:Level|Lvl)\s*(?:I{1,2}|1|2|One|Two))?\b/gi
+  },
+  {
+    name: 'CTP',
+    pattern: /\b(?:CTP|Certified\s+Treasury\s+Professional)\b/gi
+  },
+
+  // FINRA / US securities
+  { name: 'Series 7',  pattern: /\b(?:Series\s*7|FINRA\s+Series\s*7)\b/gi },
+  { name: 'Series 63', pattern: /\b(?:Series\s*63|FINRA\s+Series\s*63)\b/gi },
+  { name: 'Series 65', pattern: /\b(?:Series\s*65|FINRA\s+Series\s*65)\b/gi },
+  { name: 'Series 66', pattern: /\b(?:Series\s*66|FINRA\s+Series\s*66)\b/gi },
+
+  // UK accounting / tax / treasury / wealth
+  {
+    name: 'AAT',
+    pattern: /\b(?:AAT|Association\s+of\s+Accounting\s+Technicians|AATQB|MAAT|FMAAT|AAT\s+Level\s*4\s+Diploma\s+in\s+Professional\s+Accounting|Level\s*4\s+Diploma\s+in\s+Professional\s+Accounting|Level\s*4\s+Diploma\s+for\s+Professional\s+Accounting\s+Technicians|L4PAT)\b/gi
+  },
+  {
+    name: 'ATT',
+    pattern: /\b(?:ATT|Association\s+of\s+Taxation\s+Technicians)\b/gi
+  },
+  {
+    name: 'CTA',
+    pattern: /\b(?:CTA|Chartered\s+Tax\s+Adviser|Chartered\s+Tax\s+Advisor)\b/gi
+  },
+  {
+    name: 'ACT',
+    pattern: /\b(?:ACT|Association\s+of\s+Corporate\s+Treasurers|AMCT|MCT|FCT)\b/gi
+  },
+  {
+    name: 'IMC',
+    pattern: /\b(?:IMC|Investment\s+Management\s+Certificate)\b/gi
+  },
+  {
+    name: 'CISI',
+    pattern: /\b(?:CISI|Chartered\s+Institute\s+for\s+Securities\s*(?:and|&)\s*Investment)\b/gi
+  },
+  {
+    name: 'IAD',
+    pattern: /\b(?:IAD|Investment\s+Advice\s+Diploma|CISI\s+Level\s*4\s+Diploma\s+in\s+Investment\s+Advice|Level\s*4\s+Diploma\s+in\s+Investment\s+Advice)\b/gi
+  },
+  {
+    name: 'CeMAP',
+    pattern: /\b(?:CeMAP|Certificate\s+in\s+Mortgage\s+Advice\s+and\s+Practice|CeMAP\s+Level\s*3)\b/gi
+  },
+  {
+    name: 'CeMAP Diploma',
+    pattern: /\b(?:CeMAP\s+Diploma|CeMAP\s+Level\s*4|Level\s*4\s+CeMAP\s+Diploma|Advanced\s+Mortgage\s+Advice|AMA)\b/gi
+  },
+  {
+    name: 'DipPFS',
+    pattern: /\b(?:DipPFS|Diploma\s+in\s+Regulated\s+Financial\s+Planning)\b/gi
+  },
+  {
+    name: 'Cert CII',
+    pattern: /\b(?:Cert\s*CII|Certificate\s+in\s+Insurance|Certificate\s+in\s+Financial\s+Services)\b/gi
+  },
+
+  // CFA Institute adjacent
+  {
+    name: 'CIPM',
+    pattern: /\b(?:CIPM|Certificate\s+in\s+Investment\s+Performance\s+Measurement)(?:\s*(?:Level|Lvl)\s*(?:I{1,2}|1|2|One|Two))?\b/gi
+  },
+
+  // Internal audit / risk / security adjacent
+  {
+    name: 'CRMA',
+    pattern: /\b(?:CRMA|Certification\s+in\s+Risk\s+Management\s+Assurance)\b/gi
+  },
+  {
+    name: 'CRISC',
+    pattern: /\b(?:CRISC|Certified\s+in\s+Risk\s+and\s+Information\s+Systems\s+Control)\b/gi
+  },
+  {
+    name: 'CISM',
+    pattern: /\b(?:CISM|Certified\s+Information\s+Security\s+Manager)\b/gi
+  },
 
   // IT & Technology
   { name: 'AWS Certified Solutions Architect', pattern: /AWS\s+(?:Certified\s+)?Solutions\s+Architect/gi },

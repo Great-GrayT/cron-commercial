@@ -23,7 +23,10 @@ export class JobMetadataExtractor {
     'Nonprofit': ['nonprofit', 'non-profit', 'NGO', 'charity', 'foundation'],
     'Media': ['media', 'entertainment', 'publishing', 'journalism', 'broadcasting'],
     'Legal': ['legal', 'law', 'attorney', 'lawyer', 'paralegal', 'litigation'],
-    'Accounting': ['accounting', 'accountant', 'audit', 'tax', 'CPA', 'ACCA'],
+    'Accounting': [
+    'accounting', 'accountant', 'accounts', 'bookkeeping', 'bookkeeper',
+    'audit', 'auditor', 'tax', 'taxation', 'VAT', 'payroll', 'HMRC',
+    'AAT', 'ACA', 'ACCA', 'CIMA', 'ICAEW', 'chartered accountant'],
     'Marketing': ['marketing', 'digital marketing', 'SEO', 'SEM', 'brand', 'advertising'],
     'Data Science': ['data science', 'machine learning', 'AI', 'artificial intelligence', 'data analyst', 'big data'],
   };

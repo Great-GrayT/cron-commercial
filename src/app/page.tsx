@@ -256,6 +256,13 @@ export default function StatsPage() {
 
   const hasActiveFilters = Object.values(activeFilters).some(arr => arr.length > 0) || selectedDate !== null || debouncedTextSearch.length > 0;
 
+  // A date from a previous month can't filter job records (no archived individual jobs).
+  // Only current-month dates actually affect filteredJobs / filteredStatistics.
+  const currentMonthPrefix = statsData?.currentMonth.month || '';
+  const selectedDateAffectsJobs = selectedDate !== null && selectedDate.startsWith(currentMonthPrefix);
+  // "hasJobFilters" drives filteredStatistics reconstruction — excludes past-month date selections
+  const hasJobFilters = Object.values(activeFilters).some(arr => arr.length > 0) || selectedDateAffectsJobs || debouncedTextSearch.length > 0;
+
   // Get active statistics
   const getActiveStatistics = (): MonthlyStatistics | null => {
     if (!statsData) return null;
@@ -288,26 +295,63 @@ export default function StatsPage() {
 
   // Get available filter options from all jobs with counts (MEMOIZED for performance)
   const availableFilterOptions = useMemo(() => {
-    if (!statsData) {
+    const empty = {
+      industry: [],
+      certificate: [],
+      seniority: [],
+      location: [],
+      company: [],
+      keyword: [],
+      country: [],
+      city: [],
+      software: [],
+      programmingSkill: [],
+      yearsExperience: [],
+      academicDegree: [],
+      region: [],
+      roleType: [],
+      roleCategory: [],
+    } as Record<keyof ActiveFilters, Array<{ value: string; count: number }>>;
+
+    if (!statsData) return empty;
+
+    const toOptions = (map: Record<string, number> | undefined) =>
+      Object.entries(map || {})
+        .filter(([v]) => v)
+        .map(([value, count]) => ({ value, count }))
+        .sort((a, b) => b.count - a.count);
+
+    // In ALL mode, build filter options from aggregated statistics (all months)
+    if (useAggregated && statsData.aggregated) {
+      const aggStats = statsData.aggregated.statistics;
+
+      // Normalize city names from aggregated byCity map
+      const normalizedCityMap: Record<string, number> = {};
+      Object.entries(aggStats.byCity || {}).forEach(([cityName, count]) => {
+        const normalized = normalizeCity(cityName);
+        if (normalized) normalizedCityMap[normalized] = (normalizedCityMap[normalized] || 0) + count;
+      });
+
       return {
-        industry: [],
-        certificate: [],
-        seniority: [],
-        location: [],
-        company: [],
-        keyword: [],
-        country: [],
-        city: [],
-        software: [],
-        programmingSkill: [],
-        yearsExperience: [],
-        academicDegree: [],
-        region: [],
-        roleType: [],
-        roleCategory: [],
+        industry: toOptions(aggStats.byIndustry),
+        certificate: toOptions(aggStats.byCertificate),
+        seniority: toOptions(aggStats.bySeniority),
+        location: toOptions(aggStats.byLocation),
+        company: toOptions(aggStats.byCompany),
+        keyword: toOptions(aggStats.byKeyword),
+        country: toOptions(aggStats.byCountry),
+        city: toOptions(normalizedCityMap),
+        software: toOptions(aggStats.bySoftware),
+        programmingSkill: toOptions(aggStats.byProgrammingSkill),
+        yearsExperience: toOptions(aggStats.byYearsExperience),
+        academicDegree: toOptions(aggStats.byAcademicDegree),
+        region: toOptions(aggStats.byRegion),
+        roleType: toOptions(aggStats.byRoleType),
+        roleCategory: toOptions(aggStats.byRoleCategory),
       };
     }
 
+    // In CURRENT mode, count from individual job records
     const counts: Record<string, Record<string, number>> = {
       industry: {},
       certificate: {},
@@ -326,7 +370,6 @@ export default function StatsPage() {
       roleCategory: {},
     };
 
-    // Count occurrences
     statsData.currentMonth.jobs.forEach(job => {
       if (job.industry) counts.industry[job.industry] = (counts.industry[job.industry] || 0) + 1;
       if (job.seniority) counts.seniority[job.seniority] = (counts.seniority[job.seniority] || 0) + 1;
@@ -358,33 +401,15 @@ export default function StatsPage() {
       });
     });
 
-    // Convert to sorted arrays with counts
-    const result: Record<keyof ActiveFilters, Array<{ value: string; count: number }>> = {
-      industry: [],
-      certificate: [],
-      seniority: [],
-      location: [],
-      company: [],
-      keyword: [],
-      country: [],
-      city: [],
-      software: [],
-      programmingSkill: [],
-      yearsExperience: [],
-      academicDegree: [],
-      region: [],
-      roleType: [],
-      roleCategory: [],
-    };
-
+    const result = { ...empty };
     (Object.keys(counts) as Array<keyof ActiveFilters>).forEach(key => {
       result[key] = Object.entries(counts[key])
         .map(([value, count]) => ({ value, count }))
-        .sort((a, b) => b.count - a.count); // Sort by count descending
+        .sort((a, b) => b.count - a.count);
     });
 
     return result;
-  }, [statsData]); // Only recalculate when statsData changes
+  }, [statsData, useAggregated]); // Recalculate when statsData or mode changes
 
   // Filter jobs based on active filters and text search (MEMOIZED for performance)
   const filteredJobs = useMemo(() => {
@@ -454,13 +479,15 @@ export default function StatsPage() {
         if (!job.roleCategory || !activeFilters.roleCategory.includes(job.roleCategory)) return false;
       }
 
-      if (selectedDate) {
+      // Only apply date filter when the selected date is in the current month.
+      // Past-month dates have no individual job records available.
+      if (selectedDate && selectedDateAffectsJobs) {
         const jobDate = job.extractedDate.split('T')[0];
         if (jobDate !== selectedDate) return false;
       }
       return true;
     });
-  }, [statsData, debouncedTextSearch, activeFilters, selectedDate]); // Recalculate when filters change
+  }, [statsData, debouncedTextSearch, activeFilters, selectedDate, selectedDateAffectsJobs]); // Recalculate when filters change
 
   // Rebuild salary statistics from a set of jobs
   const rebuildSalaryStats = (jobs: JobStatistic[]): SalaryStats | undefined => {
@@ -545,9 +572,56 @@ export default function StatsPage() {
   // Apply filters to statistics (MEMOIZED - this is expensive!)
   const filteredStatistics = useMemo((): MonthlyStatistics | null => {
     const stats = getActiveStatistics();
-    if (!stats || !hasActiveFilters) return stats;
+    if (!stats || !hasJobFilters) return stats;
 
-    // Rebuild statistics from filtered jobs
+    // In ALL mode: rebuild distribution charts from current-month filtered jobs so every
+    // chart reflects the active filter. Velocity / time charts (byDate, byHour, byDayHour)
+    // keep the all-time aggregated data so the full posting history remains visible.
+    if (useAggregated) {
+      const filtered: MonthlyStatistics = {
+        totalJobs: filteredJobs.length,
+        byDate: stats.byDate,      // all-time aggregated — velocity chart stays full-history
+        byIndustry: {},
+        byCertificate: {},
+        byKeyword: {},
+        bySeniority: {},
+        byLocation: {},
+        byCountry: {},
+        byCity: {},
+        byRegion: {},
+        byCompany: {},
+        bySoftware: {},
+        byProgrammingSkill: {},
+        byYearsExperience: {},
+        byAcademicDegree: {},
+        byRoleType: {},
+        byRoleCategory: {},
+        byHour: stats.byHour,         // all-time aggregated
+        byDayHour: stats.byDayHour,   // all-time aggregated
+      };
+      filteredJobs.forEach(job => {
+        filtered.byIndustry[job.industry] = (filtered.byIndustry[job.industry] || 0) + 1;
+        filtered.bySeniority[job.seniority] = (filtered.bySeniority[job.seniority] || 0) + 1;
+        filtered.byLocation[job.location] = (filtered.byLocation[job.location] || 0) + 1;
+        if (job.country) filtered.byCountry[job.country] = (filtered.byCountry[job.country] || 0) + 1;
+        const normalizedCity = normalizeCity(job.city);
+        if (normalizedCity) filtered.byCity[normalizedCity] = (filtered.byCity[normalizedCity] || 0) + 1;
+        if (job.region) filtered.byRegion[job.region] = (filtered.byRegion[job.region] || 0) + 1;
+        filtered.byCompany[job.company] = (filtered.byCompany[job.company] || 0) + 1;
+        job.certificates.forEach(cert => { filtered.byCertificate[cert] = (filtered.byCertificate[cert] || 0) + 1; });
+        job.keywords.forEach(kw => { filtered.byKeyword[kw] = (filtered.byKeyword[kw] || 0) + 1; });
+        if (job.software) job.software.forEach(s => { filtered.bySoftware![s] = (filtered.bySoftware![s] || 0) + 1; });
+        if (job.programmingSkills) job.programmingSkills.forEach(s => { filtered.byProgrammingSkill![s] = (filtered.byProgrammingSkill![s] || 0) + 1; });
+        if (job.yearsExperience) filtered.byYearsExperience![job.yearsExperience] = (filtered.byYearsExperience![job.yearsExperience] || 0) + 1;
+        if (job.academicDegrees) job.academicDegrees.forEach(d => { filtered.byAcademicDegree![d] = (filtered.byAcademicDegree![d] || 0) + 1; });
+        if (job.roleType) filtered.byRoleType![job.roleType] = (filtered.byRoleType![job.roleType] || 0) + 1;
+        if (job.roleCategory) filtered.byRoleCategory![job.roleCategory] = (filtered.byRoleCategory![job.roleCategory] || 0) + 1;
+      });
+      filtered.salaryStats = rebuildSalaryStats(filteredJobs);
+      return filtered;
+    }
+
+    // In CURRENT mode: rebuild statistics from filtered jobs
     const filtered: MonthlyStatistics = {
       totalJobs: filteredJobs.length,
       byDate: {},
@@ -630,7 +704,7 @@ export default function StatsPage() {
     filtered.salaryStats = rebuildSalaryStats(filteredJobs);
 
     return filtered;
-  }, [filteredJobs, hasActiveFilters, useAggregated, statsData]); // Memoize based on dependencies
+  }, [filteredJobs, hasJobFilters, useAggregated, statsData, activeFilters]); // Memoize based on dependencies
 
   // Helper function to check if value should be filtered out
   const shouldFilterOut = (value: string): boolean => {
@@ -667,9 +741,19 @@ export default function StatsPage() {
     if (!stats) return [];
     const entries = Object.entries(stats.byDate)
       .sort(([a], [b]) => a.localeCompare(b));
-    const limit = useAggregated ? 30 : 14;
+
+    // In ALL mode, always show the full daily history across all months
+    if (useAggregated) {
+      return entries.map(([date, count]) => ({
+        date: new Date(date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+        jobs: count,
+        rawDate: date,
+      }));
+    }
+
+    // In CURRENT mode or when job-level filters are active, show last 14 daily data points
     return entries
-      .slice(-limit)
+      .slice(-14)
       .map(([date, count]) => ({
         date: new Date(date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
         jobs: count,
@@ -843,7 +927,7 @@ export default function StatsPage() {
     }
 
     return insights.slice(0, 6); // Limit to 6 insights
-  }, [statsData, hasActiveFilters]);
+  }, [statsData, filteredStatistics]);
 
   // Company velocity data
   const getCompanyVelocityData = () => {
@@ -984,6 +1068,29 @@ export default function StatsPage() {
 
   // Get publication time analysis data (10-minute resolution from jobs)
   const getPublicationTimeData = () => {
+    // In ALL mode, always use aggregated byHour for full historical view
+    if (useAggregated) {
+      const stats = getActiveStatistics();
+      if (stats?.byHour && Object.keys(stats.byHour).length > 0) {
+        return Object.entries(stats.byHour)
+          .flatMap(([hour, count]) => {
+            const h = hour.padStart(2, '0');
+            const perSlot = Math.round(count / 6);
+            const remainder = count - perSlot * 5;
+            return [
+              { time: `${h}:00`, count: remainder },
+              { time: `${h}:10`, count: perSlot },
+              { time: `${h}:20`, count: perSlot },
+              { time: `${h}:30`, count: perSlot },
+              { time: `${h}:40`, count: perSlot },
+              { time: `${h}:50`, count: perSlot },
+            ].filter(s => s.count > 0);
+          })
+          .sort((a, b) => a.time.localeCompare(b.time));
+      }
+    }
+
+    // In CURRENT mode or when filters are active, use individual job records (10-min resolution)
     const jobs = filteredJobs;
     const timeSlots: Record<string, number> = {};
 
@@ -999,32 +1106,9 @@ export default function StatsPage() {
       timeSlots[timeKey] = (timeSlots[timeKey] || 0) + 1;
     });
 
-    // If we have jobs, use 10-min resolution
     if (Object.keys(timeSlots).length > 0) {
       return Object.entries(timeSlots)
         .map(([time, count]) => ({ time, count }))
-        .sort((a, b) => a.time.localeCompare(b.time));
-    }
-
-    // Fallback: if no jobs available (e.g. ALL mode with no current month jobs),
-    // use aggregated byHour data and distribute across 10-min slots
-    const stats = getActiveStatistics();
-    if (stats?.byHour && Object.keys(stats.byHour).length > 0) {
-      return Object.entries(stats.byHour)
-        .flatMap(([hour, count]) => {
-          const h = hour.padStart(2, '0');
-          // Distribute hourly count across 6 ten-minute slots
-          const perSlot = Math.round(count / 6);
-          const remainder = count - perSlot * 5;
-          return [
-            { time: `${h}:00`, count: remainder },
-            { time: `${h}:10`, count: perSlot },
-            { time: `${h}:20`, count: perSlot },
-            { time: `${h}:30`, count: perSlot },
-            { time: `${h}:40`, count: perSlot },
-            { time: `${h}:50`, count: perSlot },
-          ].filter(s => s.count > 0);
-        })
         .sort((a, b) => a.time.localeCompare(b.time));
     }
 
@@ -1167,7 +1251,7 @@ export default function StatsPage() {
                 <div className="metric-compact-label">VIEW</div>
                 <div className="metric-compact-toggle">
                   <button
-                    onClick={() => setUseAggregated(true)}
+                    onClick={() => { setUseAggregated(true); setSelectedDate(null); }}
                     className={useAggregated ? 'active' : ''}
                   >
                     ALL
@@ -1223,7 +1307,8 @@ export default function StatsPage() {
             <div className="panel-header">
               <TrendingUp size={14} />
               <span>POSTING VELOCITY</span>
-              {selectedDate && <span className="velocity-filter-label">(FILTERED: {selectedDate})</span>}
+              {selectedDate && selectedDateAffectsJobs && <span className="velocity-filter-label">(FILTERED: {selectedDate})</span>}
+              {selectedDate && !selectedDateAffectsJobs && <span className="velocity-filter-label">(HIGHLIGHTED: {selectedDate})</span>}
             </div>
             <div className="chart-container compact">
               <ResponsiveContainer width="100%" height={180}>
