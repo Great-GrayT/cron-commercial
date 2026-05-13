@@ -20,9 +20,6 @@ export async function GET(request: NextRequest) {
     // Get query parameters
     const searchParams = request.nextUrl.searchParams;
     const archive = searchParams.get("archive"); // Optional: specific month (YYYY-MM)
-    const page = parseInt(searchParams.get("page") || "1", 10);
-    const limit = Math.min(parseInt(searchParams.get("limit") || "100", 10), 500);
-    const includeJobs = searchParams.get("jobs") !== "false"; // Default: include jobs
 
     // Initialize statistics cache (auto-selects R2 or Gist based on config)
     const statsCache = await getStatsCache();
@@ -54,8 +51,7 @@ export async function GET(request: NextRequest) {
     }
 
     // Return current month data, summary, AND aggregated historical data
-    // Note: getCurrentMonthData may be async (R2) or sync (Gist), so we await it
-    const currentMonthData = await Promise.resolve(statsCache.getCurrentMonthData());
+    const currentMonthSummary = statsCache.getCurrentMonthSummary();
     const summary = statsCache.getSummary();
     const stats = statsCache.getStats();
 
@@ -70,11 +66,10 @@ export async function GET(request: NextRequest) {
       success: true,
       type: "current",
       currentMonth: {
-        month: currentMonthData.month,
-        lastUpdated: currentMonthData.lastUpdated,
-        jobCount: currentMonthData.jobs?.length || 0,
-        statistics: currentMonthData.statistics,
-        jobs: currentMonthData.jobs || [], // Include full job data for current month
+        month: currentMonthSummary.month,
+        lastUpdated: currentMonthSummary.lastUpdated,
+        jobCount: currentMonthSummary.jobCount,
+        statistics: currentMonthSummary.statistics,
       },
       summary: {
         totalJobsAllTime: totalJobs, // Use aggregated total

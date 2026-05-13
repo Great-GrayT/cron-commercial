@@ -1,6 +1,6 @@
 import { logger } from './logger';
 import { SalaryData } from './salary-extractor';
-import { getR2Storage, Manifest, ManifestMonth, ManifestDay } from './r2-storage';
+import { getR2Storage, Manifest, ManifestDay } from './r2-storage';
 import { normalizeCity } from './location-extractor';
 
 /**
@@ -687,7 +687,30 @@ export class JobStatisticsCacheR2 {
     // Clear pending jobs
     this.pendingJobs.clear();
 
+    // Keep aggregated-stats.json in sync after every write
+    await this.saveAggregatedStats();
+
     logger.info(`✓ Saved to R2. Total jobs all time: ${this.manifest!.totalJobsAllTime}`);
+  }
+
+  /**
+   * Return current-month summary from already-loaded in-memory state.
+   * Must be called after load(). No additional R2 requests.
+   */
+  getCurrentMonthSummary(): {
+    month: string;
+    lastUpdated: string;
+    jobCount: number;
+    statistics: MonthlyStatistics;
+  } {
+    const currentMonth = this.getCurrentMonthString();
+    const monthData = this.manifest?.months[currentMonth];
+    return {
+      month: currentMonth,
+      lastUpdated: this.manifest?.updatedAt || new Date().toISOString(),
+      jobCount: monthData?.totalJobs ?? this.currentMonthStats?.totalJobs ?? 0,
+      statistics: this.currentMonthStats || this.createEmptyStatistics(),
+    };
   }
 
   /**
@@ -896,8 +919,54 @@ export class JobStatisticsCacheR2 {
     return await this.r2.getJSON<MonthlyStatistics>(statsKey);
   }
 
+  private async computeAggregatedStats(): Promise<{
+    archives: ArchiveMonthData[];
+    aggregated: MonthlyStatistics;
+    totalJobs: number;
+  }> {
+    if (!this.manifest) await this.load();
+
+    const statsFetches = this.manifest!.availableMonths.map(async (month) => {
+      const stats = await this.getMonthStatistics(month);
+      return { month, stats };
+    });
+
+    const results = await Promise.all(statsFetches);
+
+    const archives: ArchiveMonthData[] = [];
+    const aggregated = this.createEmptyStatistics();
+    let totalJobs = 0;
+
+    for (const { month, stats } of results) {
+      if (!stats) continue;
+      const monthData = this.manifest!.months[month];
+      archives.push({
+        month,
+        statistics: stats,
+        jobCount: monthData?.totalJobs || stats.totalJobs,
+        archived: month !== this.manifest!.currentMonth,
+      });
+      totalJobs += stats.totalJobs;
+      this.mergeStatistics(aggregated, stats);
+    }
+
+    aggregated.totalJobs = totalJobs;
+    return { archives, aggregated, totalJobs };
+  }
+
+  private async saveAggregatedStats(): Promise<void> {
+    const result = await this.computeAggregatedStats();
+    await this.r2.putJSON('aggregated-stats.json', {
+      updatedAt: new Date().toISOString(),
+      archives: result.archives,
+      aggregated: result.aggregated,
+      totalJobs: result.totalJobs,
+    }, 'public, max-age=60');
+    logger.info('✓ Saved aggregated-stats.json');
+  }
+
   /**
-   * Get all archives aggregated (compatible with old interface)
+   * Get all archives aggregated — cache-first, parallel fallback
    */
   async getAllArchivesAggregated(): Promise<{
     archives: ArchiveMonthData[];
@@ -906,31 +975,24 @@ export class JobStatisticsCacheR2 {
   }> {
     if (!this.manifest) await this.load();
 
-    const archives: ArchiveMonthData[] = [];
-    const aggregated = this.createEmptyStatistics();
-    let totalJobs = 0;
+    const cached = await this.r2.getJSON<{
+      updatedAt: string;
+      archives: ArchiveMonthData[];
+      aggregated: MonthlyStatistics;
+      totalJobs: number;
+    }>('aggregated-stats.json');
 
-    for (const month of this.manifest!.availableMonths) {
-      const stats = await this.getMonthStatistics(month);
-      if (!stats) continue;
-
-      const monthData = this.manifest!.months[month];
-      archives.push({
-        month,
-        statistics: stats,
-        jobCount: monthData?.totalJobs || stats.totalJobs,
-        archived: month !== this.manifest!.currentMonth,
-      });
-
-      totalJobs += stats.totalJobs;
-
-      // Merge statistics
-      this.mergeStatistics(aggregated, stats);
+    if (cached) {
+      return { archives: cached.archives, aggregated: cached.aggregated, totalJobs: cached.totalJobs };
     }
 
-    aggregated.totalJobs = totalJobs;
-
-    return { archives, aggregated, totalJobs };
+    const result = await this.computeAggregatedStats();
+    await this.r2.putJSON('aggregated-stats.json', {
+      updatedAt: new Date().toISOString(),
+      ...result,
+    }, 'public, max-age=60');
+    logger.info('✓ Computed and cached aggregated-stats.json');
+    return result;
   }
 
   private mergeStatistics(target: MonthlyStatistics, source: MonthlyStatistics): void {
