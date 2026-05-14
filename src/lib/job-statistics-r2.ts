@@ -931,13 +931,18 @@ export class JobStatisticsCacheR2 {
       return { month, stats };
     });
 
-    const results = await Promise.all(statsFetches);
+    const settled = await Promise.allSettled(statsFetches);
 
     const archives: ArchiveMonthData[] = [];
     const aggregated = this.createEmptyStatistics();
     let totalJobs = 0;
 
-    for (const { month, stats } of results) {
+    for (const result of settled) {
+      if (result.status === 'rejected') {
+        logger.warn('⚠ Failed to load month stats, skipping:', result.reason);
+        continue;
+      }
+      const { month, stats } = result.value;
       if (!stats) continue;
       const monthData = this.manifest!.months[month];
       archives.push({
