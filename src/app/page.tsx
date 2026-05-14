@@ -102,6 +102,7 @@ interface StatsData {
     lastUpdated: string;
     jobCount: number;
     statistics: MonthlyStatistics;
+    jobs?: JobStatistic[];
   };
   summary: {
     totalJobsAllTime: number;
@@ -119,7 +120,7 @@ interface StatsData {
     totalJobs: number;
     statistics: MonthlyStatistics;
     monthsIncluded: number;
-    archives: Array<{ month: string; jobCount: number }>;
+    archives: Array<{ month: string; jobCount: number; statistics: MonthlyStatistics }>;
   };
 }
 
@@ -151,7 +152,10 @@ export default function StatsPage() {
   const [loading, setLoading] = useState(false);
   const [statsData, setStatsData] = useState<StatsData | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [useAggregated, setUseAggregated] = useState<boolean>(true);
+  // 'all' = all-time aggregated, 'current' = current month, 'YYYY-MM' = specific archive month
+  const [viewMode, setViewMode] = useState<string>('all');
+  const useAggregated = viewMode === 'all';
+  const selectedArchiveMonth = viewMode !== 'all' && viewMode !== 'current' ? viewMode : null;
   const [activeFilters, setActiveFilters] = useState<ActiveFilters>({
     industry: [],
     certificate: [],
@@ -265,8 +269,12 @@ export default function StatsPage() {
   // Get active statistics
   const getActiveStatistics = (): MonthlyStatistics | null => {
     if (!statsData) return null;
-    if (useAggregated && statsData.aggregated) {
+    if (viewMode === 'all' && statsData.aggregated) {
       return statsData.aggregated.statistics;
+    }
+    if (selectedArchiveMonth && statsData.aggregated) {
+      const archive = statsData.aggregated.archives.find(a => a.month === selectedArchiveMonth);
+      return archive?.statistics || null;
     }
     return statsData.currentMonth.statistics;
   };
@@ -319,6 +327,36 @@ export default function StatsPage() {
         .filter(([v]) => v)
         .map(([value, count]) => ({ value, count }))
         .sort((a, b) => b.count - a.count);
+
+    // For a specific archive month, build options from that month's statistics
+    if (selectedArchiveMonth && statsData.aggregated) {
+      const archiveEntry = statsData.aggregated.archives.find(a => a.month === selectedArchiveMonth);
+      const archStats = archiveEntry?.statistics;
+      if (archStats) {
+        const normalizedCityMap: Record<string, number> = {};
+        Object.entries(archStats.byCity || {}).forEach(([cityName, count]) => {
+          const normalized = normalizeCity(cityName);
+          if (normalized) normalizedCityMap[normalized] = (normalizedCityMap[normalized] || 0) + count;
+        });
+        return {
+          industry: toOptions(archStats.byIndustry),
+          certificate: toOptions(archStats.byCertificate),
+          seniority: toOptions(archStats.bySeniority),
+          location: toOptions(archStats.byLocation),
+          company: toOptions(archStats.byCompany),
+          keyword: toOptions(archStats.byKeyword),
+          country: toOptions(archStats.byCountry),
+          city: toOptions(normalizedCityMap),
+          software: toOptions(archStats.bySoftware),
+          programmingSkill: toOptions(archStats.byProgrammingSkill),
+          yearsExperience: toOptions(archStats.byYearsExperience),
+          academicDegree: toOptions(archStats.byAcademicDegree),
+          region: toOptions(archStats.byRegion),
+          roleType: toOptions(archStats.byRoleType),
+          roleCategory: toOptions(archStats.byRoleCategory),
+        };
+      }
+    }
 
     // In ALL mode, build filter options from aggregated statistics (all months)
     if (useAggregated && statsData.aggregated) {
@@ -376,12 +414,14 @@ export default function StatsPage() {
       roleType: toOptions(curStats.byRoleType),
       roleCategory: toOptions(curStats.byRoleCategory),
     };
-  }, [statsData, useAggregated]); // Recalculate when statsData or mode changes
+  }, [statsData, useAggregated, selectedArchiveMonth]); // Recalculate when statsData or mode changes
 
   // Filter jobs based on active filters and text search (MEMOIZED for performance)
   const filteredJobs = useMemo(() => {
     if (!statsData) return [];
-    const jobs = (statsData.currentMonth as any).jobs as JobStatistic[] | undefined;
+    // Jobs are only available for the current month; archive months have no individual records
+    if (selectedArchiveMonth) return [];
+    const jobs = statsData.currentMonth.jobs;
     if (!jobs?.length) return [];
     return jobs.filter(job => {
       // Text search filter (searches title, company, description, keywords)
@@ -456,7 +496,7 @@ export default function StatsPage() {
       }
       return true;
     });
-  }, [statsData, debouncedTextSearch, activeFilters, selectedDate, selectedDateAffectsJobs]); // Recalculate when filters change
+  }, [statsData, selectedArchiveMonth, debouncedTextSearch, activeFilters, selectedDate, selectedDateAffectsJobs]); // Recalculate when filters change
 
   // Rebuild salary statistics from a set of jobs
   const rebuildSalaryStats = (jobs: JobStatistic[]): SalaryStats | undefined => {
@@ -543,9 +583,13 @@ export default function StatsPage() {
     const stats = getActiveStatistics();
     if (!stats || !hasJobFilters) return stats;
 
+    // Archive months have no individual job records — return stats unchanged
+    if (selectedArchiveMonth) return stats;
+
     // In ALL mode: rebuild distribution charts from current-month filtered jobs so every
-    // chart reflects the active filter. Velocity / time charts (byDate, byHour, byDayHour)
-    // keep the all-time aggregated data so the full posting history remains visible.
+    // chart reflects the active filter. Velocity chart (byDate) keeps all-time aggregated
+    // data so the full posting history remains visible. byHour/byDayHour are rebuilt from
+    // filtered jobs so PUBLICATION TIMES and POSTING HEATMAP match the active filter.
     if (useAggregated) {
       const filtered: MonthlyStatistics = {
         totalJobs: filteredJobs.length,
@@ -565,8 +609,8 @@ export default function StatsPage() {
         byAcademicDegree: {},
         byRoleType: {},
         byRoleCategory: {},
-        byHour: stats.byHour,         // all-time aggregated
-        byDayHour: stats.byDayHour,   // all-time aggregated
+        byHour: {},
+        byDayHour: {},
       };
       filteredJobs.forEach(job => {
         filtered.byIndustry[job.industry] = (filtered.byIndustry[job.industry] || 0) + 1;
@@ -585,6 +629,17 @@ export default function StatsPage() {
         if (job.academicDegrees) job.academicDegrees.forEach(d => { filtered.byAcademicDegree![d] = (filtered.byAcademicDegree![d] || 0) + 1; });
         if (job.roleType) filtered.byRoleType![job.roleType] = (filtered.byRoleType![job.roleType] || 0) + 1;
         if (job.roleCategory) filtered.byRoleCategory![job.roleCategory] = (filtered.byRoleCategory![job.roleCategory] || 0) + 1;
+        if (job.postedDate) {
+          try {
+            const d = new Date(job.postedDate);
+            if (!isNaN(d.getTime())) {
+              const hour = String(d.getUTCHours()).padStart(2, '0');
+              filtered.byHour![hour] = (filtered.byHour![hour] || 0) + 1;
+              const dayHour = `${d.getUTCDay()}-${d.getUTCHours()}`;
+              filtered.byDayHour![dayHour] = (filtered.byDayHour![dayHour] || 0) + 1;
+            }
+          } catch { /* skip */ }
+        }
       });
       filtered.salaryStats = rebuildSalaryStats(filteredJobs);
       return filtered;
@@ -673,7 +728,7 @@ export default function StatsPage() {
     filtered.salaryStats = rebuildSalaryStats(filteredJobs);
 
     return filtered;
-  }, [filteredJobs, hasJobFilters, useAggregated, statsData, activeFilters]); // Memoize based on dependencies
+  }, [filteredJobs, hasJobFilters, useAggregated, selectedArchiveMonth, statsData, activeFilters]); // Memoize based on dependencies
 
   // Helper function to check if value should be filtered out
   const shouldFilterOut = (value: string): boolean => {
@@ -1037,9 +1092,9 @@ export default function StatsPage() {
 
   // Get publication time analysis data (10-minute resolution from jobs)
   const getPublicationTimeData = () => {
-    // In ALL mode, always use aggregated byHour for full historical view
-    if (useAggregated) {
-      const stats = getActiveStatistics();
+    // Use filteredStats so filters affect the time chart in all view modes
+    if (useAggregated || selectedArchiveMonth) {
+      const stats = filteredStats;
       if (stats?.byHour && Object.keys(stats.byHour).length > 0) {
         return Object.entries(stats.byHour)
           .flatMap(([hour, count]) => {
@@ -1219,18 +1274,19 @@ export default function StatsPage() {
               <div className="metric-compact">
                 <div className="metric-compact-label">VIEW</div>
                 <div className="metric-compact-toggle">
-                  <button
-                    onClick={() => { setUseAggregated(true); setSelectedDate(null); }}
-                    className={useAggregated ? 'active' : ''}
+                  <select
+                    value={viewMode}
+                    onChange={(e) => { setViewMode(e.target.value); setSelectedDate(null); }}
+                    className="view-mode-select"
+                    title="Select view mode"
+                    aria-label="Select view mode"
                   >
-                    ALL
-                  </button>
-                  <button
-                    onClick={() => setUseAggregated(false)}
-                    className={!useAggregated ? 'active' : ''}
-                  >
-                    CURRENT
-                  </button>
+                    <option value="all">ALL</option>
+                    <option value="current">CURRENT</option>
+                    {statsData?.summary.availableArchives.map(month => (
+                      <option key={month} value={month}>{month}</option>
+                    ))}
+                  </select>
                 </div>
               </div>
             </div>
