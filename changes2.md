@@ -50,3 +50,37 @@ Also removed the stripping of `statistics` from the per-archive entries in the `
 - `StatsData.aggregated.archives` entries now declare `statistics: MonthlyStatistics`.
 - `filteredJobs` removed the `as any` cast; reads `statsData.currentMonth.jobs` directly.
 - Added a `selectedArchiveMonth` guard at the top of `filteredJobs`: returns `[]` immediately for archive months (no records available).
+
+---
+
+## Fix 4: Decouple jobs from stats load to fix Vercel 500 (response size + timeout)
+
+**Files:** `src/app/api/stats/load/route.ts`, `src/app/api/stats/jobs/route.ts` *(new)*, `vercel.json`, `src/app/page.tsx`, `src/app/page.css`
+
+### Root cause
+
+Two issues introduced by Fix 2 & 3 caused HTTP 500 on Vercel:
+
+1. **Response size** — adding `jobs: currentMonthJobs` to `/api/stats/load` pushed the response to 1.5–4 MB for jobs alone (2 000–5 000 records × metadata + partial descriptions), plus ~1.2 MB for 12 months of archive statistics. The total exceeded Vercel's **4.5 MB serverless response hard limit**, which returns a 500 at the CDN edge — not a 413 — so it never manifested locally.
+
+2. **`maxDuration` not honoured** — the route exported `maxDuration = 300` but `vercel.json` had no matching entry. On Hobby plan Vercel ignores the in-file setting and caps at 10 s. The new sequential `getAllArchivesAggregated() → loadJobsForMonth()` chain can take 8–15 s and hit that cap.
+
+### Fix — API
+
+**`src/app/api/stats/load/route.ts`** — removed the `loadJobsForMonth` call and `jobs` field from the response. The route now only fetches aggregated stats → response stays well under 200 KB.
+
+**`src/app/api/stats/jobs/route.ts`** *(new)* — dedicated endpoint `GET /api/stats/jobs?month=YYYY-MM` that streams job records for a given month. Has its own `export const maxDuration = 300`.
+
+**`vercel.json`** — added entries for both routes so `maxDuration: 300` is enforced at the infra level on all Vercel plans:
+```json
+"app/api/stats/load/route.ts": { "maxDuration": 300 },
+"app/api/stats/jobs/route.ts": { "maxDuration": 300 }
+```
+
+### Fix — Frontend (`src/app/page.tsx`, `src/app/page.css`)
+
+- Added `jobsLoading: boolean` state.
+- Added a `useEffect` that fires after `statsData` arrives and lazily `fetch`es `/api/stats/jobs?month=<currentMonth>`, then merges the result into `statsData.currentMonth.jobs`. Non-fatal: on fetch failure jobs default to `[]` and charts remain functional.
+- RECENT JOBS panel header shows a spinner while `jobsLoading` is true.
+- Table body shows a "Loading jobs…" placeholder row while loading and `filteredJobs` is still empty.
+- Added `.jobs-loading-row td` and `.panel-header-spinner` CSS classes to [page.css](src/app/page.css) (no inline styles).

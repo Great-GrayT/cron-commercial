@@ -673,6 +673,17 @@
   font-size: 11px;
 }
 
+.jobs-loading-row td {
+  text-align: center;
+  padding: 1rem;
+  opacity: 0.5;
+}
+
+.panel-header-spinner {
+  margin-left: 6px;
+  opacity: 0.6;
+}
+
 .jobs-table-full thead {
   position: sticky;
   top: 0;

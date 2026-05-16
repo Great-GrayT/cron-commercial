@@ -62,12 +62,6 @@ export async function GET(request: NextRequest) {
     const aggregated = aggregatedResult?.aggregated || {};
     const totalJobs = aggregatedResult?.totalJobs || 0;
 
-    // Load individual job records for the current month (enables frontend filtering & RECENT JOBS table)
-    logger.info('Loading current month jobs...');
-    const currentMonthJobs = typeof statsCache.loadJobsForMonth === 'function'
-      ? await statsCache.loadJobsForMonth(currentMonthSummary.month)
-      : [];
-
     return NextResponse.json({
       success: true,
       type: "current",
@@ -76,7 +70,6 @@ export async function GET(request: NextRequest) {
         lastUpdated: currentMonthSummary.lastUpdated,
         jobCount: currentMonthSummary.jobCount,
         statistics: currentMonthSummary.statistics,
-        jobs: currentMonthJobs,
       },
       summary: {
         totalJobsAllTime: totalJobs, // Use aggregated total

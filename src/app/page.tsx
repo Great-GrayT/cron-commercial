@@ -150,6 +150,7 @@ interface ActiveFilters {
 
 export default function StatsPage() {
   const [loading, setLoading] = useState(false);
+  const [jobsLoading, setJobsLoading] = useState(false);
   const [statsData, setStatsData] = useState<StatsData | null>(null);
   const [error, setError] = useState<string | null>(null);
   // 'all' = all-time aggregated, 'current' = current month, 'YYYY-MM' = specific archive month
@@ -186,6 +187,29 @@ export default function StatsPage() {
   useEffect(() => {
     loadStatistics();
   }, []);
+
+  // After stats load, fetch jobs for the current month in the background
+  useEffect(() => {
+    if (!statsData || statsData.currentMonth.jobs !== undefined) return;
+    const month = statsData.currentMonth.month;
+    setJobsLoading(true);
+    fetch(`/api/stats/jobs?month=${encodeURIComponent(month)}`)
+      .then(r => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
+      .then(data => {
+        setStatsData(prev => {
+          if (!prev) return prev;
+          return { ...prev, currentMonth: { ...prev.currentMonth, jobs: data.jobs ?? [] } };
+        });
+      })
+      .catch(() => {
+        // Non-fatal: jobs table will be empty but charts still work
+        setStatsData(prev => {
+          if (!prev) return prev;
+          return { ...prev, currentMonth: { ...prev.currentMonth, jobs: [] } };
+        });
+      })
+      .finally(() => setJobsLoading(false));
+  }, [statsData?.currentMonth.month]);
 
   // Debounce text search to avoid filtering on every keystroke
   useEffect(() => {
@@ -1693,6 +1717,7 @@ export default function StatsPage() {
             <div className="panel-header">
               <Briefcase size={14} />
               <span>RECENT JOBS (TOP 100)</span>
+              {jobsLoading && <Loader2 size={12} className="animate-spin panel-header-spinner" />}
             </div>
             <div className="jobs-table-container">
               <table className="jobs-table-full">
@@ -1708,6 +1733,11 @@ export default function StatsPage() {
                   </tr>
                 </thead>
                 <tbody>
+                  {jobsLoading && getSortedJobs().length === 0 && (
+                    <tr className="jobs-loading-row">
+                      <td colSpan={7}>Loading jobs…</td>
+                    </tr>
+                  )}
                   {getSortedJobs().map((job: JobStatistic) => (
                     <tr
                       key={job.id}

@@ -7,6 +7,12 @@
     "app/api/cron/check-jobs/route.ts": {
       "memory": 1024,
       "maxDuration": 60
+    },
+    "app/api/stats/load/route.ts": {
+      "maxDuration": 300
+    },
+    "app/api/stats/jobs/route.ts": {
+      "maxDuration": 300
     }
   }
 }
