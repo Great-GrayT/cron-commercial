@@ -84,3 +84,39 @@ Two issues introduced by Fix 2 & 3 caused HTTP 500 on Vercel:
 - RECENT JOBS panel header shows a spinner while `jobsLoading` is true.
 - Table body shows a "Loading jobs…" placeholder row while loading and `filteredJobs` is still empty.
 - Added `.jobs-loading-row td` and `.panel-header-spinner` CSS classes to [page.css](src/app/page.css) (no inline styles).
+
+---
+
+## Fix 5: PUBLICATION TIMES, POSTING HEATMAP, and RECENT JOBS broken after Fix 4
+
+**Files:** `src/app/page.tsx`
+
+### Problems
+
+**PUBLICATION TIMES empty on CURRENT mode:** `getPublicationTimeData()` entered the `if (useAggregated || selectedArchiveMonth)` branch only for ALL and archive views. In CURRENT mode the branch was skipped entirely, falling through to `filteredJobs` (which is now lazy-loaded and starts empty). The chart was blank until jobs arrived.
+
+**PUBLICATION TIMES empty on archive months:** The function did enter the stats branch for archives, but old archive `stats/YYYY-MM.json` files may not have a `byHour` field (added later). When `byHour` was missing the function fell through to `filteredJobs`, which is always `[]` for archive months → permanently empty.
+
+**RECENT JOBS empty:** The lazy-load `useEffect` used `[statsData?.currentMonth.month]` as its dependency. This expression evaluates to the same string on every subsequent render (the month never changes). If a stale closure captured `statsData` before jobs were set, the guard `statsData.currentMonth.jobs !== undefined` could incorrectly early-return, preventing the fetch.
+
+### Fix
+
+**`getPublicationTimeData`** — removed the mode guard entirely. The function now always tries `filteredStats?.byHour` first (available in every view without waiting for the lazy job load). Only falls through to individual job records as a true last resort (old archives without `byHour`, or when filter-rebuilt `filteredStatistics` already has correct `byHour` computed from filtered jobs).
+
+**Jobs `useEffect` dependency** — changed from `[statsData?.currentMonth.month]` to `[statsData]`. This ensures the effect re-evaluates with the freshest closure every time `statsData` changes reference, while the `statsData.currentMonth.jobs !== undefined` guard still prevents duplicate fetches once jobs are loaded.
+
+---
+
+## Fix 6: PUBLICATION TIMES bars are flat/identical within each hour
+
+**Files:** `src/app/page.tsx`
+
+### Problem
+The `byHour` path in `getPublicationTimeData` distributed each hour's count across 6 synthetic 10-minute slots using `Math.round(count / 6)`. This produced 6 equal-height bars per hour — a flat, misleading chart — because no actual per-minute data exists in `byHour`.
+
+### Fix
+Flipped the priority order in `getPublicationTimeData`:
+1. **Jobs available first** — when `filteredJobs` is non-empty (i.e., current-month jobs have lazy-loaded), compute real 10-minute slot counts from `job.postedDate`. This gives genuine sub-hour variation.
+2. **Hourly fallback** — when jobs aren't available (ALL mode aggregated, archive months), emit one honest bar per hour at `HH:00` with the true hourly count. No synthetic splitting.
+
+The previous order (stats-first) meant the synthetic hourly spread always won, even when real job data was present.

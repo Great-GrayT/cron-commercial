@@ -209,7 +209,8 @@ export default function StatsPage() {
         });
       })
       .finally(() => setJobsLoading(false));
-  }, [statsData?.currentMonth.month]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [statsData]);
 
   // Debounce text search to avoid filtering on every keystroke
   useEffect(() => {
@@ -1114,49 +1115,34 @@ export default function StatsPage() {
   const hasRoleTypeData = filteredStats?.byRoleType && Object.keys(filteredStats.byRoleType).length > 0;
   const hasRoleCategoryData = filteredStats?.byRoleCategory && Object.keys(filteredStats.byRoleCategory).length > 0;
 
-  // Get publication time analysis data (10-minute resolution from jobs)
+  // Get publication time analysis data.
+  // Prefers true 10-min resolution from individual jobs when available;
+  // falls back to honest hourly bars from byHour (no fake sub-hour splitting).
   const getPublicationTimeData = () => {
-    // Use filteredStats so filters affect the time chart in all view modes
-    if (useAggregated || selectedArchiveMonth) {
-      const stats = filteredStats;
-      if (stats?.byHour && Object.keys(stats.byHour).length > 0) {
-        return Object.entries(stats.byHour)
-          .flatMap(([hour, count]) => {
-            const h = hour.padStart(2, '0');
-            const perSlot = Math.round(count / 6);
-            const remainder = count - perSlot * 5;
-            return [
-              { time: `${h}:00`, count: remainder },
-              { time: `${h}:10`, count: perSlot },
-              { time: `${h}:20`, count: perSlot },
-              { time: `${h}:30`, count: perSlot },
-              { time: `${h}:40`, count: perSlot },
-              { time: `${h}:50`, count: perSlot },
-            ].filter(s => s.count > 0);
-          })
+    // If individual jobs are loaded, use real 10-min resolution.
+    if (filteredJobs.length > 0) {
+      const timeSlots: Record<string, number> = {};
+      filteredJobs.forEach(job => {
+        const date = new Date(job.postedDate);
+        const hours = date.getUTCHours();
+        const minutes = date.getUTCMinutes();
+        const roundedMinutes = Math.floor(minutes / 10) * 10;
+        const timeKey = `${String(hours).padStart(2, '0')}:${String(roundedMinutes).padStart(2, '0')}`;
+        timeSlots[timeKey] = (timeSlots[timeKey] || 0) + 1;
+      });
+      if (Object.keys(timeSlots).length > 0) {
+        return Object.entries(timeSlots)
+          .map(([time, count]) => ({ time, count }))
           .sort((a, b) => a.time.localeCompare(b.time));
       }
     }
 
-    // In CURRENT mode or when filters are active, use individual job records (10-min resolution)
-    const jobs = filteredJobs;
-    const timeSlots: Record<string, number> = {};
-
-    jobs.forEach(job => {
-      const date = new Date(job.postedDate);
-      const hours = date.getUTCHours();
-      const minutes = date.getUTCMinutes();
-
-      // Round to nearest 10-minute slot
-      const roundedMinutes = Math.floor(minutes / 10) * 10;
-      const timeKey = `${String(hours).padStart(2, '0')}:${String(roundedMinutes).padStart(2, '0')}`;
-
-      timeSlots[timeKey] = (timeSlots[timeKey] || 0) + 1;
-    });
-
-    if (Object.keys(timeSlots).length > 0) {
-      return Object.entries(timeSlots)
-        .map(([time, count]) => ({ time, count }))
+    // Fallback: use pre-aggregated hourly counts as honest hourly bars.
+    // One bar per hour — no synthetic sub-hour splitting.
+    const stats = filteredStats;
+    if (stats?.byHour && Object.keys(stats.byHour).length > 0) {
+      return Object.entries(stats.byHour)
+        .map(([hour, count]) => ({ time: hour.padStart(2, '0') + ':00', count }))
         .sort((a, b) => a.time.localeCompare(b.time));
     }
 
