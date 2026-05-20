@@ -1,8 +1,11 @@
-# Change 3: Interaction-Driven Loading & Payload Reduction
+# Change 3: Description Lazy-Loading & Payload Reduction
 
 ## Goal
 
-Reduce client payload size by making heavy R2 data loads depend on explicit user interaction rather than happening automatically on every page load. Charts always use pre-computed aggregated data. Individual job records (metadata) are loaded incrementally. Descriptions are never pre-loaded — they are fetched on-demand only when the user explicitly needs them.
+Eliminate the largest source of unnecessary payload — job descriptions (~1.5 MB/day compressed,
+up to 7.5 MB total) — while keeping all filters, charts, and interactions fully functional.
+Metadata (lightweight job records without descriptions) is still loaded for the full current month
+on page load. Descriptions are fetched on-demand only when the user actually needs them.
 
 ---
 
@@ -25,45 +28,60 @@ descriptions/YYYY/MM/day-DD.ndjson.gz → job descriptions only (~1.5MB/day comp
 
 ### Current API Endpoints (relevant ones)
 - `GET /api/stats/load` → reads manifest + url-index + stats/YYYY-MM.json + aggregated-stats.json → returns pre-computed stats for all view modes
-- `GET /api/stats/jobs?month=YYYY-MM` → calls `loadJobsForMonth()` which fetches ALL metadata files for the month in parallel + last 5 days of descriptions. This is the heavy endpoint.
+- `GET /api/stats/jobs?month=YYYY-MM[&days=N][&date=YYYY-MM-DD][&all=true]` → loads metadata only (no descriptions). Default: all days.
+- `GET /api/stats/description?date=YYYY-MM-DD` → (new) loads descriptions for a single date on demand.
 
 ### Key Source Files
-- `src/lib/job-statistics-r2.ts` — `JobStatisticsCacheR2` class. Relevant methods: `load()`, `loadJobsForMonth()`, `loadMetadataForDate()` (already exists as private-ish pattern), `loadJobDescription()`
-- `src/app/api/stats/jobs/route.ts` — calls `statsCache.loadJobsForMonth(month)`
-- `src/app/page.tsx` — the entire dashboard UI (~2200 lines, "use client")
+- `src/lib/job-statistics-r2.ts` — `JobStatisticsCacheR2` class. Relevant methods: `load()`, `loadJobsForMonth()`, `loadDescriptionsForDate()` (new)
+- `src/app/api/stats/jobs/route.ts` — calls `statsCache.loadJobsForMonth(month, options)`
+- `src/app/api/stats/description/route.ts` — (new) calls `statsCache.loadDescriptionsForDate(date)`
+- `src/app/page.tsx` — dashboard UI (~2200 lines, "use client")
 - `src/components/SearchFilterPanel.tsx` — search bar + filter dropdowns
-- `src/components/charts/PostingHeatmap.tsx` — accepts both `jobs: Job[]` and `byDayHour?: Record<string, number>`, prefers `byDayHour` if present
 
 ---
 
-## Current Problem Summary
+## Problem That Was Solved
 
-1. `GET /api/stats/jobs` fetches ALL days of metadata (up to 31 R2 reads) + 5 days of descriptions on every page load regardless of user interaction.
-2. Charts rebuild their data from individual `filteredJobs` when filters are active, forcing the full job load.
-3. `PostingHeatmap` and `Publication Times` chart prefer individual job records even though pre-computed `byDayHour`/`byHour` fields exist in the stats.
-4. Descriptions (~1.5MB/day, 5 days = up to 7.5MB) are downloaded for every user even if they never open a job description popup.
-5. Text search scans `job.description` which requires descriptions to be pre-loaded.
+**Before this change**, `GET /api/stats/jobs` fetched ALL days of metadata (up to 31 R2 reads)
+**plus** descriptions for the 5 most recent days on every page load, regardless of whether the
+user ever opened a job description popup. This was up to ~7.5 MB of description data transferred
+on every visit.
+
+**What was NOT changed**: Filters, charts, heatmap, and publication times all continue to work
+exactly as before — they rebuild from `filteredJobs` (metadata) when filters are active.
 
 ---
 
-## Target Behavior After This Change
+## Actual Behavior After This Change
 
-### Charts
-All charts always read from pre-computed stats (`aggregated-stats.json` or `stats/YYYY-MM.json`). They never depend on individual job records. Filters applied via the filter panel do NOT alter chart data — charts always show the macro picture for the selected view mode (ALL / CURRENT / specific month). Only the jobs table and job count in Key Metrics reflect active filters.
-
-### Jobs Table
-- On page load: fetch only the last **3 days** of metadata for the current month.
-- When user clicks a date dot on the **Posting Velocity** chart: fetch metadata for that specific date on-demand (if not already loaded).
-- A **"LOAD FULL MONTH"** button in the jobs table panel fetches all remaining days.
-- Fetched days are merged into a client-side job list; already-loaded days are not re-fetched.
+### Metadata (Job Records)
+- On page load: fetch **all** metadata for the current month (no change in coverage vs before).
+- Descriptions are stripped — all returned jobs have `description: ''`.
+- `filteredJobs` is built from a client-side `Map<id, JobStatistic>` (`loadedJobsById`) instead
+  of `statsData.currentMonth.jobs`.
 
 ### Descriptions
 - **Never pre-loaded.**
-- **Job description popup**: on hover, if the description is not yet in a local cache, call `GET /api/stats/description?date=YYYY-MM-DD` which returns all descriptions for that day. Cache them client-side. Show a loading spinner in the popup while fetching.
-- **Text search on descriptions**: text search on title/company/keywords works at all times (these fields are in metadata). To also search descriptions, the user must have a date selected (from the velocity chart click). When a date is selected AND text search is non-empty, the system automatically fetches that date's descriptions. A hint message is shown in the search bar when text search is active but no date is selected: `"Select a date on the chart to also search descriptions"`.
+- **Job description popup**: when the hover timer fires (3 s), `loadDescriptionsForDate(dateKey)`
+  is called. This fetches `GET /api/stats/description?date=YYYY-MM-DD` and stores the result in a
+  client-side `Map<id, string>` (`descriptionCache`). The popup shows a spinner while loading.
+- **Text search on descriptions**: text search on title/company/keywords works at all times.
+  When a date is selected on the Velocity chart AND text search is non-empty, descriptions for
+  that date are auto-fetched so the search can match description content too. A hint is shown in
+  the search bar explaining this.
 
-### Publication Times & Heatmap
-Both charts use pre-computed `byHour` / `byDayHour` fields from `filteredStatistics` (which is now always the pre-computed stats). They no longer depend on `filteredJobs`. The `jobs` prop passed to `PostingHeatmap` becomes an empty array; it will use `byDayHour` exclusively.
+### Charts & Filters
+- All charts rebuild from `filteredJobs` (metadata) when filters are active — same behavior as
+  before this change.
+- When no filters are active, pre-computed stats from `aggregated-stats.json` / `stats/YYYY-MM.json`
+  are used directly (fast path).
+- `PostingHeatmap` and `Publication Times` use `filteredJobs` for real resolution when jobs are
+  loaded, falling back to pre-computed `byDayHour`/`byHour` otherwise.
+
+### On-Demand Date Metadata
+- Clicking a date dot on the **Posting Velocity** chart calls `loadDateMetadata(date)` which
+  fetches `GET /api/stats/jobs?month=X&date=YYYY-MM-DD` for that specific date (if not already
+  loaded). This adds those jobs to `loadedJobsById` without replacing existing ones.
 
 ---
 
@@ -75,933 +93,167 @@ Both charts use pre-computed `byHour` / `byDayHour` fields from `filteredStatist
 
 #### Change 1a — Modify `loadJobsForMonth()` to accept options
 
-**Current signature (line ~738):**
+New signature:
 ```ts
-async loadJobsForMonth(month: string): Promise<JobStatistic[]>
-```
-
-**Replace entire `loadJobsForMonth` method with:**
-```ts
-/**
- * Load job metadata for a month.
- * Options:
- *   - days: load only the last N days (default: all days)
- *   - date: load only a specific date (YYYY-MM-DD), overrides days
- * Descriptions are NEVER loaded here. All returned jobs have description: ''.
- */
 async loadJobsForMonth(
   month: string,
   options: { days?: number; date?: string } = {}
-): Promise<JobStatistic[]> {
-  if (!this.manifest?.months[month]) {
-    return [];
-  }
-
-  const monthData = this.manifest.months[month];
-  let daysToLoad = [...monthData.days];
-
-  if (options.date) {
-    // Load only the specific date
-    daysToLoad = daysToLoad.filter(d => d.date === options.date);
-  } else if (options.days !== undefined) {
-    // Load only the last N days (most recent first, then take N)
-    const sorted = [...daysToLoad].sort((a, b) => b.date.localeCompare(a.date));
-    daysToLoad = sorted.slice(0, options.days);
-  }
-
-  const jobs: JobStatistic[] = [];
-
-  const dayPromises = daysToLoad.map(async (day) => {
-    try {
-      const metadata = await this.r2.getNDJSONGzipped<JobMetadata>(day.metadata);
-      return metadata.map(m => ({ ...m, description: '' } as JobStatistic));
-    } catch (error) {
-      logger.warn(`⚠ Failed to load metadata for ${day.date}, skipping:`, error);
-      return [];
-    }
-  });
-
-  const dayResults = await Promise.all(dayPromises);
-  for (const dayJobs of dayResults) {
-    jobs.push(...dayJobs);
-  }
-
-  // Include pending jobs for this month (only if loading all days)
-  if (!options.date && options.days === undefined) {
-    for (const [dateKey, pendingJobs] of this.pendingJobs.entries()) {
-      if (dateKey.startsWith(month)) {
-        jobs.push(...pendingJobs);
-      }
-    }
-  }
-
-  return jobs;
-}
+): Promise<JobStatistic[]>
 ```
 
-#### Change 1b — Add new method `loadDescriptionsForDate()`
+- `options.date` → load only that specific date
+- `options.days` → load only the last N days
+- no options → load all days (default)
+- **Descriptions are NEVER loaded.** All returned jobs have `description: ''`.
 
-Add this method after `loadJobsForMonth`:
+#### Change 1b — Add `loadDescriptionsForDate()`
 
 ```ts
-/**
- * Load all descriptions for a specific date (YYYY-MM-DD).
- * Returns a map of jobId → description string.
- */
-async loadDescriptionsForDate(dateKey: string): Promise<Map<string, string>> {
-  const [year, month, day] = dateKey.split('-');
-  const descriptionsKey = `descriptions/${year}/${month}/day-${day}.ndjson.gz`;
-
-  try {
-    const descriptions = await this.r2.getNDJSONGzipped<JobDescription>(descriptionsKey);
-    const map = new Map<string, string>();
-    for (const d of descriptions) {
-      map.set(d.id, d.description);
-    }
-    return map;
-  } catch (error: any) {
-    if (error.name === 'NoSuchKey' || error.$metadata?.httpStatusCode === 404) {
-      return new Map();
-    }
-    throw error;
-  }
-}
+async loadDescriptionsForDate(dateKey: string): Promise<Map<string, string>>
 ```
 
-#### Change 1c — Remove description loading from `loadJobsForDateRange()`
+Returns a `Map<jobId, description>` for the given `YYYY-MM-DD`. Returns an empty Map on 404.
 
-The `loadJobsForDateRange` method currently also loads descriptions for recent dates. Strip that out so it only loads metadata:
+#### Change 1c — Strip description loading from `loadJobsForDateRange()`
 
-Find the method and remove the entire `shouldLoadDescriptions` / `descMap` / description-loading block. All returned jobs should have `description: ''`. The method signature and day-iteration logic stays the same, just remove description loading.
+Removed the `shouldLoadDescriptions` / `descMap` / description-loading block. All returned jobs
+have `description: ''`.
 
 ---
 
 ### FILE 2: `src/app/api/stats/jobs/route.ts`
 
-**Replace the entire file with:**
+Supports query parameters:
+- `month` (required)
+- `days` (optional) — load last N days
+- `date` (optional) — load a specific date
+- `all=true` (optional) — load all days (this is the page-load default)
 
-```ts
-import { NextRequest, NextResponse } from "next/server";
-import { getStatsCache } from "@/lib/stats-storage";
-import { validateEnvironmentVariables } from "@/lib/validation";
-import { logger } from "@/lib/logger";
-
-export const maxDuration = 300;
-export const dynamic = "force-dynamic";
-
-/**
- * GET /api/stats/jobs?month=YYYY-MM[&days=N][&date=YYYY-MM-DD]
- *
- * Returns job metadata (no descriptions) for the requested month.
- *
- * Query parameters:
- *   month (required) - YYYY-MM
- *   days  (optional) - load only the last N days. Default: 3.
- *   date  (optional) - load only this specific date (YYYY-MM-DD). Overrides days.
- *   all   (optional) - if "true", load all days (ignores days param). For "Load Full Month" button.
- */
-export async function GET(request: NextRequest) {
-  try {
-    validateEnvironmentVariables();
-
-    const { searchParams } = request.nextUrl;
-    const month = searchParams.get("month");
-    if (!month) {
-      return NextResponse.json(
-        { error: "Missing required query parameter: month (YYYY-MM)" },
-        { status: 400 }
-      );
-    }
-
-    const dateParam = searchParams.get("date") ?? undefined;
-    const allParam = searchParams.get("all") === "true";
-    const daysParam = searchParams.get("days");
-
-    let options: { days?: number; date?: string } = { days: 3 }; // default: last 3 days
-
-    if (dateParam) {
-      options = { date: dateParam };
-    } else if (allParam) {
-      options = {}; // load all days
-    } else if (daysParam) {
-      const parsed = parseInt(daysParam, 10);
-      if (!isNaN(parsed) && parsed > 0) {
-        options = { days: parsed };
-      }
-    }
-
-    const statsCache = await getStatsCache();
-    await statsCache.load();
-
-    if (typeof statsCache.loadJobsForMonth !== "function") {
-      return NextResponse.json({ success: true, month, jobs: [] });
-    }
-
-    logger.info(`Loading jobs for month: ${month}, options: ${JSON.stringify(options)}`);
-    const jobs = await statsCache.loadJobsForMonth(month, options);
-
-    return NextResponse.json({ success: true, month, jobs });
-  } catch (error) {
-    logger.error("Error fetching jobs:", error);
-    return NextResponse.json(
-      {
-        error: "Failed to fetch jobs",
-        message: error instanceof Error ? error.message : String(error),
-      },
-      { status: 500 }
-    );
-  }
-}
-```
+Default when no limit param is given: load all days (`options = {}`).
 
 ---
 
 ### FILE 3: `src/app/api/stats/description/route.ts` (NEW FILE)
 
-Create this file at the path above:
+`GET /api/stats/description?date=YYYY-MM-DD`
 
-```ts
-import { NextRequest, NextResponse } from "next/server";
-import { getStatsCache } from "@/lib/stats-storage";
-import { validateEnvironmentVariables } from "@/lib/validation";
-import { logger } from "@/lib/logger";
-
-export const maxDuration = 60;
-export const dynamic = "force-dynamic";
-
-/**
- * GET /api/stats/description?date=YYYY-MM-DD
- *
- * Returns all job descriptions for the given date.
- * Response: { success: true, date, descriptions: Array<{ id: string, description: string }> }
- *
- * Used for:
- * - On-demand job description popup (hover on a job row)
- * - Text search that includes description content (requires date selection)
- */
-export async function GET(request: NextRequest) {
-  try {
-    validateEnvironmentVariables();
-
-    const date = request.nextUrl.searchParams.get("date");
-    if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
-      return NextResponse.json(
-        { error: "Missing or invalid required query parameter: date (YYYY-MM-DD)" },
-        { status: 400 }
-      );
-    }
-
-    const statsCache = await getStatsCache();
-    await statsCache.load();
-
-    if (typeof statsCache.loadDescriptionsForDate !== "function") {
-      return NextResponse.json({ success: true, date, descriptions: [] });
-    }
-
-    logger.info(`Loading descriptions for date: ${date}`);
-    const descMap = await statsCache.loadDescriptionsForDate(date);
-
-    const descriptions = Array.from(descMap.entries()).map(([id, description]) => ({
-      id,
-      description,
-    }));
-
-    return NextResponse.json({ success: true, date, descriptions });
-  } catch (error) {
-    logger.error("Error fetching descriptions:", error);
-    return NextResponse.json(
-      {
-        error: "Failed to fetch descriptions",
-        message: error instanceof Error ? error.message : String(error),
-      },
-      { status: 500 }
-    );
-  }
-}
-```
+Returns `{ success: true, date, descriptions: Array<{ id, description }> }`.
 
 ---
 
 ### FILE 4: `src/app/page.tsx`
 
-This file is ~2200 lines. Apply the following changes in order.
-
----
-
-#### Change 4a — Add new state variables (after line ~185, after the existing `useRef` declarations)
-
-Add:
+#### New state
 ```ts
-// Tracks which dates have had their metadata loaded (Set of "YYYY-MM-DD" strings)
 const [loadedDates, setLoadedDates] = useState<Set<string>>(new Set());
-// All loaded job records across all fetched dates, keyed by job id for dedup
 const [loadedJobsById, setLoadedJobsById] = useState<Map<string, JobStatistic>>(new Map());
-// Client-side description cache: jobId → description string
 const [descriptionCache, setDescriptionCache] = useState<Map<string, string>>(new Map());
-// Whether we're currently fetching descriptions for a date
 const [loadingDescriptionsDate, setLoadingDescriptionsDate] = useState<string | null>(null);
-// Whether all-month metadata has been loaded (for "Load Full Month" button)
-const [fullMonthLoaded, setFullMonthLoaded] = useState(false);
-const [fullMonthLoading, setFullMonthLoading] = useState(false);
 ```
 
----
+#### Background metadata load (replaces old jobs useEffect)
+Fetches `?month=X&all=true` (all metadata, no descriptions) after stats load. Populates
+`loadedJobsById` and `loadedDates`.
 
-#### Change 4b — Replace the background jobs fetch `useEffect` (currently around lines 191–213)
+#### New helpers
+- `loadDateMetadata(date)` — fetches a single date's metadata if not already loaded
+- `loadDescriptionsForDate(date)` — fetches descriptions for a date and merges into `descriptionCache`
 
-**Remove this entire block:**
-```ts
-// After stats load, fetch jobs for the current month in the background
-useEffect(() => {
-  if (!statsData || statsData.currentMonth.jobs !== undefined) return;
-  const month = statsData.currentMonth.month;
-  setJobsLoading(true);
-  fetch(`/api/stats/jobs?month=${encodeURIComponent(month)}`)
-    .then(r => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
-    .then(data => {
-      setStatsData(prev => { ... });
-    })
-    ...
-  }, [statsData]);
-```
+#### `filteredJobs` useMemo
+Data source changed from `statsData.currentMonth.jobs` to `Array.from(loadedJobsById.values())`,
+with descriptions merged from `descriptionCache`. All filter logic is identical.
 
-**Replace with:**
-```ts
-// After stats load, fetch only the last 3 days of metadata for the current month
-useEffect(() => {
-  if (!statsData) return;
-  const month = statsData.currentMonth.month;
-  setJobsLoading(true);
-  fetch(`/api/stats/jobs?month=${encodeURIComponent(month)}&days=3`)
-    .then(r => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
-    .then(data => {
-      const jobs: JobStatistic[] = data.jobs ?? [];
-      const newById = new Map<string, JobStatistic>();
-      const newDates = new Set<string>();
-      jobs.forEach(job => {
-        newById.set(job.id, job);
-        const d = job.extractedDate?.split('T')[0];
-        if (d) newDates.add(d);
-      });
-      setLoadedJobsById(newById);
-      setLoadedDates(newDates);
-    })
-    .catch(() => {
-      // Non-fatal: table will be empty but charts still work
-    })
-    .finally(() => setJobsLoading(false));
-}, [statsData?.currentMonth?.month]); // Only re-run if month changes
-```
+#### `filteredStatistics` useMemo
+Unchanged in behavior: rebuilds from `filteredJobs` when `hasJobFilters` is true; returns
+pre-computed stats when no filters are active.
 
----
+#### `handleDateClick`
+Also calls `loadDateMetadata(newDate)` and — if text search is active — `loadDescriptionsForDate(newDate)`.
 
-#### Change 4c — Add a helper to load a specific date's metadata on-demand
+#### Job description popup
+Checks `descriptionCache.get(hoveredJob.id)` first; shows a spinner while `loadingDescriptionsDate === dateKey`.
 
-Add this function inside the component (after `loadStatistics`):
-
-```ts
-const loadDateMetadata = async (date: string) => {
-  if (loadedDates.has(date) || !statsData) return;
-  const month = date.substring(0, 7); // YYYY-MM
-  try {
-    const r = await fetch(`/api/stats/jobs?month=${encodeURIComponent(month)}&date=${encodeURIComponent(date)}`);
-    if (!r.ok) return;
-    const data = await r.json();
-    const jobs: JobStatistic[] = data.jobs ?? [];
-    setLoadedJobsById(prev => {
-      const next = new Map(prev);
-      jobs.forEach(job => next.set(job.id, job));
-      return next;
-    });
-    setLoadedDates(prev => new Set([...prev, date]));
-  } catch {
-    // Non-fatal
-  }
-};
-```
-
----
-
-#### Change 4d — Add a helper to load the full month's metadata on-demand
-
-```ts
-const loadFullMonth = async () => {
-  if (fullMonthLoaded || fullMonthLoading || !statsData) return;
-  setFullMonthLoading(true);
-  const month = statsData.currentMonth.month;
-  try {
-    const r = await fetch(`/api/stats/jobs?month=${encodeURIComponent(month)}&all=true`);
-    if (!r.ok) return;
-    const data = await r.json();
-    const jobs: JobStatistic[] = data.jobs ?? [];
-    const newById = new Map<string, JobStatistic>(loadedJobsById);
-    const newDates = new Set<string>(loadedDates);
-    jobs.forEach(job => {
-      newById.set(job.id, job);
-      const d = job.extractedDate?.split('T')[0];
-      if (d) newDates.add(d);
-    });
-    setLoadedJobsById(newById);
-    setLoadedDates(newDates);
-    setFullMonthLoaded(true);
-  } catch {
-    // Non-fatal
-  } finally {
-    setFullMonthLoading(false);
-  }
-};
-```
-
----
-
-#### Change 4e — Add a helper to load descriptions for a date on-demand
-
-```ts
-const loadDescriptionsForDate = async (date: string) => {
-  if (loadingDescriptionsDate === date || !date) return;
-  setLoadingDescriptionsDate(date);
-  try {
-    const r = await fetch(`/api/stats/description?date=${encodeURIComponent(date)}`);
-    if (!r.ok) return;
-    const data = await r.json();
-    const descs: Array<{ id: string; description: string }> = data.descriptions ?? [];
-    setDescriptionCache(prev => {
-      const next = new Map(prev);
-      descs.forEach(d => next.set(d.id, d.description));
-      return next;
-    });
-  } catch {
-    // Non-fatal
-  } finally {
-    setLoadingDescriptionsDate(null);
-  }
-};
-```
-
----
-
-#### Change 4f — Modify `handleDateClick` to also trigger metadata load
-
-Find the existing `handleDateClick` function:
-```ts
-const handleDateClick = (data: any) => {
-  if (!data || !data.activePayload || !data.activePayload[0]) return;
-  const clickedDate = data.activePayload[0].payload.rawDate;
-  if (!clickedDate) return;
-  setSelectedDate(selectedDate === clickedDate ? null : clickedDate);
-};
-```
-
-Replace with:
-```ts
-const handleDateClick = (data: any) => {
-  if (!data || !data.activePayload || !data.activePayload[0]) return;
-  const clickedDate = data.activePayload[0].payload.rawDate;
-  if (!clickedDate) return;
-  const newDate = selectedDate === clickedDate ? null : clickedDate;
-  setSelectedDate(newDate);
-  if (newDate) {
-    // Load metadata for this date if not already loaded
-    loadDateMetadata(newDate);
-    // If text search is active, also load descriptions for this date
-    if (debouncedTextSearch) {
-      loadDescriptionsForDate(newDate);
-    }
-  }
-};
-```
-
----
-
-#### Change 4g — Add a `useEffect` to load descriptions when text search + selected date are both set
-
-Add after the debounce `useEffect`:
-```ts
-// When text search becomes active and a date is already selected, load descriptions for that date
-useEffect(() => {
-  if (debouncedTextSearch && selectedDate && selectedDateAffectsJobs) {
-    loadDescriptionsForDate(selectedDate);
-  }
-}, [debouncedTextSearch, selectedDate]);
-```
-
----
-
-#### Change 4h — Replace `filteredJobs` useMemo to use `loadedJobsById` instead of `statsData.currentMonth.jobs`
-
-Find the `filteredJobs` useMemo (currently around line 445). The top of it reads:
-```ts
-const filteredJobs = useMemo(() => {
-  if (!statsData) return [];
-  if (selectedArchiveMonth) return [];
-  const jobs = statsData.currentMonth.jobs;
-  if (!jobs?.length) return [];
-  return jobs.filter(job => { ... });
-```
-
-Change the data source from `statsData.currentMonth.jobs` to the new `loadedJobsById` map, and merge in description cache:
-
-```ts
-const filteredJobs = useMemo(() => {
-  if (!statsData) return [];
-  if (selectedArchiveMonth) return [];
-
-  // Build array from loaded metadata, merging in any cached descriptions
-  const jobs = Array.from(loadedJobsById.values()).map(job => ({
-    ...job,
-    description: descriptionCache.get(job.id) || '',
-  }));
-
-  if (!jobs.length) return [];
-
-  return jobs.filter(job => {
-    // Text search: searches title, company, keywords always.
-    // Searches description only if it has been loaded (non-empty).
-    if (debouncedTextSearch) {
-      const searchLower = debouncedTextSearch.toLowerCase();
-      const matchesSearch =
-        job.title.toLowerCase().includes(searchLower) ||
-        job.company.toLowerCase().includes(searchLower) ||
-        (job.description && job.description.toLowerCase().includes(searchLower)) ||
-        job.keywords.some(k => k.toLowerCase().includes(searchLower));
-      if (!matchesSearch) return false;
-    }
-    // ... rest of the filter conditions remain identical (industry, certificate, etc.)
-    // Keep all existing filter checks unchanged from this point onward
-```
-
-**Important:** The rest of the filter conditions inside the `return jobs.filter(job => { ... })` block stay exactly the same — only the first few lines that get `jobs` change. Keep all `activeFilters.industry`, `activeFilters.certificate`, `activeFilters.seniority`, `activeFilters.location`, `activeFilters.company`, `activeFilters.keyword`, `activeFilters.country`, `activeFilters.city`, `activeFilters.software`, `activeFilters.programmingSkill`, `activeFilters.yearsExperience`, `activeFilters.academicDegree`, `activeFilters.region`, `activeFilters.roleType`, `activeFilters.roleCategory`, and `selectedDate` checks unchanged.
-
-Update the dependency array:
-```ts
-}, [statsData, selectedArchiveMonth, debouncedTextSearch, activeFilters, selectedDate, selectedDateAffectsJobs, loadedJobsById, descriptionCache]);
-```
-
----
-
-#### Change 4i — Simplify `filteredStatistics` — charts always use pre-computed data (Option D)
-
-Find the `filteredStatistics` useMemo (currently around line 607). It is the large block that rebuilds statistics from `filteredJobs` when filters are active.
-
-**Replace the entire `filteredStatistics` useMemo with:**
-
-```ts
-// Charts always show pre-computed aggregated data regardless of active filters (Option D).
-// Filters only affect the jobs table (filteredJobs), not the chart distributions.
-const filteredStatistics = useMemo((): MonthlyStatistics | null => {
-  return getActiveStatistics();
-}, [statsData, viewMode, selectedArchiveMonth]);
-```
-
-This removes the expensive rebuild-from-jobs logic entirely.
-
----
-
-#### Change 4j — Remove `rebuildSalaryStats` function
-
-The `rebuildSalaryStats` function (around line 527) was only used inside the old `filteredStatistics` rebuild. It is no longer needed. **Delete it entirely.**
-
----
-
-#### Change 4k — Update the "FILTERED" metric in Key Metrics panel
-
-Find this block in the JSX:
-```tsx
-<div className="metric-compact">
-  <div className="metric-compact-label">FILTERED</div>
-  <div className="metric-compact-value highlight">
-    <AnimatedNumber value={filteredStats?.totalJobs || 0} />
-  </div>
-</div>
-```
-
-Replace with:
-```tsx
-<div className="metric-compact">
-  <div className="metric-compact-label">FILTERED</div>
-  <div className="metric-compact-value highlight">
-    <AnimatedNumber value={filteredJobs.length} />
-  </div>
-  {hasActiveFilters && (
-    <div className="metric-compact-sublabel">loaded days</div>
-  )}
-</div>
-```
-
----
-
-#### Change 4l — Update `PostingHeatmap` call — stop passing `filteredJobs`
-
-Find:
-```tsx
-<PostingHeatmap
-  jobs={filteredJobs}
-  byDayHour={filteredStats?.byDayHour}
-/>
-```
-
-Replace with:
-```tsx
-<PostingHeatmap
-  jobs={[]}
-  byDayHour={filteredStats?.byDayHour}
-/>
-```
-
-The component already prefers `byDayHour` when present (see `PostingHeatmap.tsx` line 66: it checks `byDayHour` first). Passing an empty array is safe.
-
----
-
-#### Change 4m — Update `getPublicationTimeData()` — always use pre-computed `byHour`
-
-Find the `getPublicationTimeData` function (around line 1121). It currently checks `filteredJobs.length > 0` first and uses real job timestamps. Replace the entire function with:
-
-```ts
-const getPublicationTimeData = () => {
-  const stats = filteredStats;
-  if (!stats?.byHour || Object.keys(stats.byHour).length === 0) return [];
-  return Object.entries(stats.byHour)
-    .map(([hour, count]) => ({ time: hour.padStart(2, '0') + ':00', count }))
-    .sort((a, b) => a.time.localeCompare(b.time));
-};
-```
-
----
-
-#### Change 4n — Add "LOAD FULL MONTH" button in the Jobs Table panel header
-
-Find the jobs table panel header:
-```tsx
-<div className="panel-header">
-  <Briefcase size={14} />
-  <span>RECENT JOBS (TOP 100)</span>
-  {jobsLoading && <Loader2 size={12} className="animate-spin panel-header-spinner" />}
-</div>
-```
-
-Replace with:
-```tsx
-<div className="panel-header">
-  <Briefcase size={14} />
-  <span>RECENT JOBS (TOP 100)</span>
-  {(jobsLoading || fullMonthLoading) && <Loader2 size={12} className="animate-spin panel-header-spinner" />}
-  {!fullMonthLoaded && !fullMonthLoading && !jobsLoading && (
-    <button
-      className="terminal-btn-small"
-      onClick={loadFullMonth}
-      title="Load all jobs for this month"
-    >
-      LOAD FULL MONTH
-    </button>
-  )}
-  {fullMonthLoaded && (
-    <span className="panel-header-note">FULL MONTH LOADED</span>
-  )}
-</div>
-```
-
-Add these CSS classes to `page.css`:
-```css
-.terminal-btn-small {
-  font-size: 10px;
-  padding: 2px 8px;
-  border: 1px solid var(--accent-primary);
-  background: transparent;
-  color: var(--accent-primary);
-  cursor: pointer;
-  font-family: 'Courier New', monospace;
-  margin-left: auto;
-}
-.terminal-btn-small:hover {
-  background: var(--accent-primary);
-  color: var(--bg-primary);
-}
-.panel-header-note {
-  font-size: 10px;
-  color: var(--text-muted);
-  margin-left: auto;
-}
-```
-
----
-
-#### Change 4o — Update the job description popup to fetch on-demand
-
-Find the hover popup JSX (around line 2144):
-```tsx
-{hoveredJob && popupPosition && (
-  <div ... >
-    ...
-    <div dangerouslySetInnerHTML={{ __html: hoveredJob.description }} />
-  </div>
-)}
-```
-
-Change the popup content area:
-```tsx
-{hoveredJob && popupPosition && (
-  <div ... >
-    <div className="job-popup-header"> ... </div>
-    <div className="job-popup-content" onWheel={(e) => e.stopPropagation()}>
-      {(() => {
-        const desc = descriptionCache.get(hoveredJob.id) || hoveredJob.description;
-        const dateKey = hoveredJob.extractedDate?.split('T')[0];
-        const isLoadingThisDate = loadingDescriptionsDate === dateKey;
-
-        if (desc) {
-          return <div dangerouslySetInnerHTML={{ __html: desc }} />;
-        }
-        if (isLoadingThisDate) {
-          return (
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: 16 }}>
-              <Loader2 size={16} className="spin" />
-              <span>Loading description...</span>
-            </div>
-          );
-        }
-        // Trigger load if not already loading
-        if (dateKey && !isLoadingThisDate) {
-          loadDescriptionsForDate(dateKey);
-        }
-        return (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: 16 }}>
-            <Loader2 size={16} className="spin" />
-            <span>Loading description...</span>
-          </div>
-        );
-      })()}
-    </div>
-  </div>
-)}
-```
-
-**Important note:** The `loadDescriptionsForDate` call inside the render is a side-effect in render, which is a React anti-pattern. To avoid this, instead trigger the description fetch in the `hoverTimerRef` timeout where `setHoveredJob` is called:
-
-Find the hover timer inside `onMouseEnter`:
-```ts
-hoverTimerRef.current = setTimeout(() => {
-  setHoveredJob(job);
-  setPopupPosition({ ... });
-}, 3000);
-```
-
-Replace with:
-```ts
-hoverTimerRef.current = setTimeout(() => {
-  setHoveredJob(job);
-  setPopupPosition({ x: window.innerWidth / 2 - 200, y: window.innerHeight / 2 - 250 });
-  // Trigger description fetch for this job's date
-  const dateKey = job.extractedDate?.split('T')[0];
-  if (dateKey) {
-    loadDescriptionsForDate(dateKey);
-  }
-}, 3000);
-```
-
-And simplify the popup content to just check the cache:
-```tsx
-<div className="job-popup-content" onWheel={(e) => e.stopPropagation()}>
-  {(() => {
-    const desc = descriptionCache.get(hoveredJob.id) || hoveredJob.description;
-    const dateKey = hoveredJob.extractedDate?.split('T')[0];
-    const isLoading = loadingDescriptionsDate === dateKey && !desc;
-    if (isLoading) {
-      return (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: 16 }}>
-          <Loader2 size={16} className="spin" />
-          <span>Loading description...</span>
-        </div>
-      );
-    }
-    return <div dangerouslySetInnerHTML={{ __html: desc || '<p>No description available.</p>' }} />;
-  })()}
-</div>
-```
-
----
-
-#### Change 4p — Update dependency arrays and remove stale useMemo
-
-Find `marketInsights` useMemo (around line 903):
-```ts
-}, [statsData, filteredStatistics]);
-```
-Keep as is — `filteredStatistics` is still referenced (it just returns pre-computed data now).
-
-Find `availableFilterOptions` useMemo. It currently references `useAggregated` and `selectedArchiveMonth`. Keep this unchanged — filter options still come from pre-computed stats.
-
----
-
-#### Change 4q — Clean up references to `statsData.currentMonth.jobs`
-
-Search for any remaining references to `statsData.currentMonth.jobs` in `page.tsx` and remove them. After the changes above, `jobs` is no longer stored in `statsData` — it lives in `loadedJobsById`. The `StatsData` interface can also have the `jobs?` field removed from `currentMonth`.
-
-In the `StatsData` interface (around line 99):
-```ts
-interface StatsData {
-  currentMonth: {
-    month: string;
-    lastUpdated: string;
-    jobCount: number;
-    statistics: MonthlyStatistics;
-    jobs?: JobStatistic[]; // ← REMOVE THIS LINE
-  };
-  ...
-}
-```
+#### `StatsData` interface
+`jobs?` field removed from `currentMonth` (jobs now live in `loadedJobsById`).
 
 ---
 
 ### FILE 5: `src/components/SearchFilterPanel.tsx`
 
-#### Change 5a — Add `selectedDate` prop and description search hint
-
-Add `selectedDate` and `onDateClear` to the props interface:
-
+Added props:
 ```ts
-interface SearchFilterPanelProps {
-  activeFilters: ActiveFilters;
-  setActiveFilters: (filters: ActiveFilters) => void;
-  availableOptions: Record<keyof ActiveFilters, FilterOption[]>;
-  textSearch: string;
-  setTextSearch: (search: string) => void;
-  selectedDate: string | null;          // ADD
-  loadingDescriptions?: boolean;         // ADD — true while fetching descriptions
-}
+selectedDate: string | null;
+loadingDescriptions?: boolean;
 ```
 
-Inside the component, add a hint below the search input that appears when text search is active but no date is selected:
-
-Find the search input container in the JSX:
-```tsx
-<div className="search-input-container">
-  <Search size={16} />
-  <input ... />
-  {textSearch && <button ...><X size={14} /></button>}
-</div>
-```
-
-Add below it (still inside `search-filter-header`):
-```tsx
-{textSearch && !selectedDate && (
-  <div className="search-date-hint">
-    <span>Select a date on the velocity chart to also search descriptions</span>
-  </div>
-)}
-{textSearch && selectedDate && loadingDescriptions && (
-  <div className="search-date-hint loading">
-    <Loader2 size={12} className="spin" />
-    <span>Loading descriptions for {selectedDate}…</span>
-  </div>
-)}
-{textSearch && selectedDate && !loadingDescriptions && (
-  <div className="search-date-hint ready">
-    <span>Searching metadata + descriptions for {selectedDate}</span>
-  </div>
-)}
-```
-
-Add `Loader2` to the lucide-react imports at the top of `SearchFilterPanel.tsx`.
-
-Add to `SearchFilterPanel.css`:
-```css
-.search-date-hint {
-  font-size: 10px;
-  color: var(--text-muted);
-  padding: 4px 8px;
-  font-family: 'Courier New', monospace;
-}
-.search-date-hint.loading {
-  color: var(--accent-secondary);
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-.search-date-hint.ready {
-  color: var(--accent-primary);
-}
-```
+Shows a hint below the search input:
+- No date selected + text search active → "Select a date on the velocity chart to also search descriptions"
+- Date selected + loading → spinner + "Loading descriptions for {date}…"
+- Date selected + loaded → "Searching metadata + descriptions for {date}"
 
 ---
 
-#### Change 5b — Pass new props from `page.tsx` to `SearchFilterPanel`
+### FILE 6: `src/app/page.tsx` — Loading UX (terminal-themed progress screen)
 
-Find the `SearchFilterPanel` usage in `page.tsx`:
-```tsx
-<SearchFilterPanel
-  activeFilters={activeFilters}
-  setActiveFilters={setActiveFilters}
-  availableOptions={availableFilterOptions}
-  textSearch={textSearch}
-  setTextSearch={setTextSearch}
-/>
+#### New state
+```ts
+const [loadingStep, setLoadingStep] = useState('INITIALIZING...');
+const [loadingProgress, setLoadingProgress] = useState(0);
 ```
 
-Replace with:
-```tsx
-<SearchFilterPanel
-  activeFilters={activeFilters}
-  setActiveFilters={setActiveFilters}
-  availableOptions={availableFilterOptions}
-  textSearch={textSearch}
-  setTextSearch={setTextSearch}
-  selectedDate={selectedDate}
-  loadingDescriptions={loadingDescriptionsDate !== null}
-/>
+#### New refs (imperative width update to avoid inline-style linter warnings)
+```ts
+const loadingBarRef = useRef<HTMLDivElement>(null);
+const jobsBarRef = useRef<HTMLDivElement>(null);
 ```
 
----
+A `useEffect` syncs both refs to `loadingProgress` on every change:
+```ts
+useEffect(() => {
+  if (loadingBarRef.current) loadingBarRef.current.style.width = `${loadingProgress}%`;
+  if (jobsBarRef.current) jobsBarRef.current.style.width = `${loadingProgress}%`;
+}, [loadingProgress]);
+```
 
-## Component Data Reference (for understanding what feeds what)
+#### Stage progression
 
-### Charts — always pre-computed, never touch job records after this change
-
-| Component | Input field | Source |
-|---|---|---|
-| `PostingVelocity` (ComposedChart) | `filteredStatistics.byDate` | `aggregated-stats.json` (ALL mode) or `stats/YYYY-MM.json` (CURRENT/archive) |
-| `IndustryTreemap` | `filteredStatistics.byIndustry` | same |
-| `Seniority` (PieChart) | `filteredStatistics.bySeniority` | same |
-| `PostingHeatmap` | `byDayHour={filteredStats?.byDayHour}`, `jobs={[]}` | same |
-| `PublicationTimes` (BarChart) | `filteredStatistics.byHour` | same |
-| `CertsBump` | `filteredStatistics.byCertificate` | same |
-| `RegionalDistribution` (PieChart) | `filteredStatistics.byRegion` | same |
-| `TopEmployers` (BarChart) | `filteredStatistics.byCompany` | same |
-| `WorldMap` | `filteredStatistics.byCountry` | same |
-| `TopCities` (BarChart) | `filteredStatistics.byCity` | same |
-| `ExperienceRequired` (BarChart) | `filteredStatistics.byYearsExperience` | same |
-| `DegreesRequired` (PieChart) | `filteredStatistics.byAcademicDegree` | same |
-| `SoftwareTools` (tag buttons) | `filteredStatistics.bySoftware` | same |
-| `ProgrammingLanguages` (tag buttons) | `filteredStatistics.byProgrammingSkill` | same |
-| `JobCategories` (PieChart) | `filteredStatistics.byRoleCategory` | same |
-| `TopRoleTypes` (BarChart + tags) | `filteredStatistics.byRoleType` | same |
-| `KeywordAnalysis` table + `SkillsTagCloud` | `filteredStatistics.byKeyword` | same |
-| `ComprehensiveStatistics` table | all `filteredStats.*` fields | same |
-
-### Jobs Table & Descriptions — use loaded individual records
-
-| Component | Input | Source |
-|---|---|---|
-| `RecentJobs` table | `filteredJobs` (filtered from `loadedJobsById`) | `metadata/YYYY/MM/day-DD.ndjson.gz` (last 3 days on load, more on demand) |
-| `JobDescriptionPopup` | `descriptionCache.get(hoveredJob.id)` | `descriptions/YYYY/MM/day-DD.ndjson.gz` (fetched on hover after 3s delay) |
-
-### Key Metrics — mix of sources
-
-| Metric | Source |
+**Phase 1 — stats fetch** (inside `loadStatistics`):
+| Progress | Step text |
 |---|---|
-| TOTAL | `statsData.summary.totalJobsAllTime` (from `aggregated-stats.json`) |
-| THIS MONTH | `statsData.currentMonth.jobCount` (from `manifest.json`) |
-| AVG/MONTH | `statsData.summary.overallStatistics.averageJobsPerMonth` (from `aggregated-stats.json`) |
-| FILTERED | `filteredJobs.length` (count of loaded records matching active filters) |
-| ARCHIVES | `statsData.summary.availableArchives.length` (from `manifest.json`) |
+| 8 % | `CONNECTING TO DATA LAYER...` |
+| 20 % | `LOADING MARKET STATISTICS...` |
+| 60 % | `PROCESSING STATISTICS...` |
+| 80 % | `BUILDING CHART DATA...` |
 
-### `SearchFilterPanel` — filter options from pre-computed stats only
+On retry: `CONNECTION ERROR — RETRYING (n/N)...` at 5 %.
 
-| Input prop | Value |
+**Phase 2 — metadata fetch** (in the `statsData` useEffect):
+| Progress | Step text |
 |---|---|
-| `availableOptions` | Built from `filteredStatistics.*` maps (pre-computed, not from job records) |
-| `textSearch` / `setTextSearch` | Page-level state |
-| `selectedDate` | `selectedDate` state from page (set by clicking velocity chart) |
-| `loadingDescriptions` | `loadingDescriptionsDate !== null` |
+| 85 % | `LOADING JOB RECORDS...` |
+| 100 % | `READY` |
+
+#### Full loading screen (shown while `loading === true`)
+
+Terminal-card overlay with:
+- Brand header: `BarChart3` icon + `JOB MARKET ANALYTICS` / `RECRUITMENT INTELLIGENCE TERMINAL`
+- Blinking cursor prompt: `> {loadingStep} █`
+- Animated progress bar (`.loading-bar-fill`, width driven imperatively via ref)
+- Footer row: percentage on the left, `STAGE N / 3` label on the right
+
+#### Slim jobs-loading strip (shown when `!loading && jobsLoading`)
+
+Single-row banner below the top bar with: stage text, 4 px progress bar (ref-driven), percentage.
+
+#### New CSS classes (in `src/app/page.css`)
+
+Loading screen: `.loading-screen`, `.loading-screen-card`, `.loading-brand`, `.loading-brand-icon`,
+`.loading-brand-title`, `.loading-brand-sub`, `.loading-stage`, `.loading-prompt`,
+`.loading-stage-text`, `.loading-cursor` (blinking), `.loading-bar-track`, `.loading-bar-fill`,
+`.loading-bar-footer`, `.loading-pct`, `.loading-steps-hint`
+
+Jobs strip: `.jobs-loading-strip`, `.jobs-loading-label`, `.jobs-loading-bar-track`,
+`.jobs-loading-bar-fill`, `.jobs-loading-pct`
 
 ---
 
@@ -1010,22 +262,24 @@ Replace with:
 | Endpoint | When called | R2 reads | Response size |
 |---|---|---|---|
 | `GET /api/stats/load` | On page mount + LOAD DATA button | manifest + url-index + stats/current + aggregated-stats | ~150KB |
-| `GET /api/stats/jobs?month=X&days=3` | Background after page load | 3 metadata files | ~450KB |
-| `GET /api/stats/jobs?month=X&date=YYYY-MM-DD` | On velocity chart date click | 1 metadata file | ~150KB |
-| `GET /api/stats/jobs?month=X&all=true` | On "LOAD FULL MONTH" button | all metadata files for month | up to ~4.5MB |
-| `GET /api/stats/description?date=YYYY-MM-DD` | On job hover (3s delay) or text search + date | 1 descriptions file | ~1.5MB |
+| `GET /api/stats/jobs?month=X&all=true` | Background after page load | all metadata files for month | ~450KB–4.5MB |
+| `GET /api/stats/jobs?month=X&date=YYYY-MM-DD` | On velocity chart date click (if not already loaded) | 1 metadata file | ~150KB |
+| `GET /api/stats/description?date=YYYY-MM-DD` | On job hover (3 s delay) or text search + date | 1 descriptions file | ~1.5MB |
 
-vs. **before**: every page load triggered ~25 R2 reads and up to 7.5MB of descriptions.
+vs. **before**: every page load triggered metadata + up to 7.5MB of descriptions whether the user
+needed them or not.
 
 ---
 
-## Files to Create
-- `src/app/api/stats/description/route.ts` (new)
+## Files Modified / Created
 
-## Files to Modify
+### Created
+- `src/app/api/stats/description/route.ts`
+
+### Modified
 - `src/lib/job-statistics-r2.ts`
 - `src/app/api/stats/jobs/route.ts`
 - `src/app/page.tsx`
 - `src/components/SearchFilterPanel.tsx`
-- `src/components/SearchFilterPanel.css` (add `.search-date-hint` styles)
-- `src/app/page.css` (add `.terminal-btn-small` and `.panel-header-note` styles)
+- `src/components/SearchFilterPanel.css`
+- `src/app/page.css`

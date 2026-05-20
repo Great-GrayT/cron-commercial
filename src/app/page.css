@@ -657,6 +657,171 @@
 }
 
 /* ========================================
+   TERMINAL LOADING SCREEN
+   ======================================== */
+
+.loading-screen {
+  position: fixed;
+  inset: 0;
+  background: var(--terminal-bg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 200;
+}
+
+.loading-screen-card {
+  width: min(420px, 90vw);
+  background: var(--terminal-bg-panel, var(--terminal-bg-secondary));
+  border: 1px solid var(--terminal-accent);
+  border-radius: var(--radius-sm);
+  padding: 2rem 1.75rem;
+  box-shadow: 0 0 40px rgba(157, 78, 221, 0.25);
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+.loading-brand {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.loading-brand-icon {
+  color: var(--terminal-accent);
+  flex-shrink: 0;
+}
+
+.loading-brand-title {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--terminal-accent);
+  letter-spacing: 1px;
+}
+
+.loading-brand-sub {
+  font-size: 9px;
+  color: var(--color-text-muted);
+  letter-spacing: 0.5px;
+  margin-top: 2px;
+}
+
+.loading-stage {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--color-text-primary);
+  min-height: 1.4em;
+}
+
+.loading-prompt {
+  color: var(--terminal-accent);
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.loading-stage-text {
+  flex: 1;
+}
+
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
+.loading-cursor {
+  animation: blink 1s step-start infinite;
+  color: var(--terminal-accent);
+  font-size: 14px;
+  line-height: 1;
+}
+
+.loading-bar-track {
+  height: 6px;
+  background: var(--color-bg-tertiary, rgba(255,255,255,0.08));
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.loading-bar-fill {
+  height: 100%;
+  width: 0;
+  background: var(--terminal-accent);
+  border-radius: 3px;
+  transition: width 0.35s ease;
+  box-shadow: 0 0 8px rgba(157, 78, 221, 0.6);
+}
+
+.loading-bar-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.loading-pct {
+  font-size: 11px;
+  color: var(--terminal-accent);
+  font-weight: 700;
+}
+
+.loading-steps-hint {
+  font-size: 10px;
+  color: var(--color-text-muted);
+  letter-spacing: 0.5px;
+}
+
+/* ========================================
+   JOBS LOADING STRIP
+   Thin progress bar shown during background metadata fetch
+   ======================================== */
+
+.jobs-loading-strip {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 12px;
+  background: var(--terminal-bg-secondary);
+  border-bottom: 1px solid var(--terminal-border);
+  font-size: 11px;
+  font-family: var(--font-mono);
+}
+
+.jobs-loading-label {
+  color: var(--terminal-accent);
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.jobs-loading-bar-track {
+  height: 4px;
+  width: 160px;
+  background: var(--color-bg-tertiary, rgba(255,255,255,0.08));
+  border-radius: 2px;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.jobs-loading-bar-fill {
+  height: 100%;
+  width: 0;
+  background: var(--terminal-accent);
+  border-radius: 2px;
+  transition: width 0.3s ease;
+}
+
+.jobs-loading-pct {
+  font-size: 10px;
+  color: var(--color-text-muted);
+  flex-shrink: 0;
+  min-width: 28px;
+  text-align: right;
+}
+
+/* ========================================
    JOBS TABLE STYLES
    ======================================== */
 
