@@ -38,10 +38,8 @@ export async function GET(request: NextRequest) {
     logger.info(`Loading descriptions for date: ${date}`);
     const descMap = await statsCache.loadDescriptionsForDate(date);
 
-    const descriptions = Array.from(descMap.entries()).map(([id, description]) => ({
-      id,
-      description,
-    }));
+    const entries = Array.from(descMap.entries()) as Array<[string, string]>;
+    const descriptions = entries.map(([id, description]) => ({ id, description }));
 
     return NextResponse.json({ success: true, date, descriptions });
   } catch (error) {
