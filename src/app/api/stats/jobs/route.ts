@@ -7,22 +7,44 @@ export const maxDuration = 300;
 export const dynamic = "force-dynamic";
 
 /**
- * GET /api/stats/jobs?month=YYYY-MM
+ * GET /api/stats/jobs?month=YYYY-MM[&days=N][&date=YYYY-MM-DD][&all=true]
  *
- * Returns individual job records for the requested month.
- * Intentionally kept separate from /api/stats/load to keep that response
- * small and fast (no Vercel 4.5 MB response cap issues).
+ * Returns job metadata (no descriptions) for the requested month.
+ *
+ * Query parameters:
+ *   month (required) - YYYY-MM
+ *   days  (optional) - load only the last N days. Default: 3.
+ *   date  (optional) - load only this specific date (YYYY-MM-DD). Overrides days.
+ *   all   (optional) - if "true", load all days. For "Load Full Month" button.
  */
 export async function GET(request: NextRequest) {
   try {
     validateEnvironmentVariables();
 
-    const month = request.nextUrl.searchParams.get("month");
+    const { searchParams } = request.nextUrl;
+    const month = searchParams.get("month");
     if (!month) {
       return NextResponse.json(
         { error: "Missing required query parameter: month (YYYY-MM)" },
         { status: 400 }
       );
+    }
+
+    const dateParam = searchParams.get("date") ?? undefined;
+    const allParam = searchParams.get("all") === "true";
+    const daysParam = searchParams.get("days");
+
+    let options: { days?: number; date?: string } = { days: 3 };
+
+    if (dateParam) {
+      options = { date: dateParam };
+    } else if (allParam) {
+      options = {};
+    } else if (daysParam) {
+      const parsed = parseInt(daysParam, 10);
+      if (!isNaN(parsed) && parsed > 0) {
+        options = { days: parsed };
+      }
     }
 
     const statsCache = await getStatsCache();
@@ -32,8 +54,8 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ success: true, month, jobs: [] });
     }
 
-    logger.info(`Loading jobs for month: ${month}`);
-    const jobs = await statsCache.loadJobsForMonth(month);
+    logger.info(`Loading jobs for month: ${month}, options: ${JSON.stringify(options)}`);
+    const jobs = await statsCache.loadJobsForMonth(month, options);
 
     return NextResponse.json({ success: true, month, jobs });
   } catch (error) {

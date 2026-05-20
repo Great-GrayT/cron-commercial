@@ -22,7 +22,8 @@ import {
   UserCircle,
   Folder,
   Clock,
-  GraduationCap
+  GraduationCap,
+  Loader2,
 } from "lucide-react";
 
 interface ActiveFilters {
@@ -60,6 +61,8 @@ interface SearchFilterPanelProps {
   availableOptions: Record<keyof ActiveFilters, FilterOption[]>;
   textSearch: string;
   setTextSearch: (search: string) => void;
+  selectedDate: string | null;
+  loadingDescriptions?: boolean;
 }
 
 const FILTER_CATEGORIES: FilterCategory[] = [
@@ -86,6 +89,8 @@ export function SearchFilterPanel({
   availableOptions,
   textSearch,
   setTextSearch,
+  selectedDate,
+  loadingDescriptions,
 }: SearchFilterPanelProps) {
   const [isExpanded, setIsExpanded] = useState(false);
   const [openDropdown, setOpenDropdown] = useState<keyof ActiveFilters | null>(null);
@@ -284,6 +289,23 @@ export function SearchFilterPanel({
             </button>
           )}
         </div>
+
+        {textSearch && !selectedDate && (
+          <div className="search-date-hint">
+            <span>Select a date on the velocity chart to also search descriptions</span>
+          </div>
+        )}
+        {textSearch && selectedDate && loadingDescriptions && (
+          <div className="search-date-hint loading">
+            <Loader2 size={12} className="spin" />
+            <span>Loading descriptions for {selectedDate}…</span>
+          </div>
+        )}
+        {textSearch && selectedDate && !loadingDescriptions && (
+          <div className="search-date-hint ready">
+            <span>Searching metadata + descriptions for {selectedDate}</span>
+          </div>
+        )}
 
         <button
           className={`filter-toggle-btn ${isExpanded ? 'active' : ''}`}

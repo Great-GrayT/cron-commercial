@@ -365,6 +365,24 @@
   color: var(--color-error);
 }
 
+.search-date-hint {
+  font-size: 10px;
+  color: var(--color-text-muted);
+  padding: 4px 8px;
+  font-family: 'Courier New', monospace;
+}
+
+.search-date-hint.loading {
+  color: var(--accent-secondary, var(--terminal-accent));
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.search-date-hint.ready {
+  color: var(--accent-primary, var(--terminal-accent));
+}
+
 /* Responsive */
 @media (max-width: 768px) {
   .search-filter-header {

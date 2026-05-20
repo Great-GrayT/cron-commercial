@@ -1064,3 +1064,39 @@
 .job-popup-positioned {
   pointer-events: auto;
 }
+
+.terminal-btn-small {
+  font-size: 10px;
+  padding: 2px 8px;
+  border: 1px solid var(--accent-primary);
+  background: transparent;
+  color: var(--accent-primary);
+  cursor: pointer;
+  font-family: 'Courier New', monospace;
+  margin-left: auto;
+}
+
+.terminal-btn-small:hover {
+  background: var(--accent-primary);
+  color: var(--bg-primary);
+}
+
+.panel-header-note {
+  font-size: 10px;
+  color: var(--text-muted);
+  margin-left: auto;
+}
+
+.metric-compact-hint {
+  font-size: 9px;
+  color: var(--text-muted, #6b7280);
+  font-family: 'Courier New', monospace;
+  margin-top: 2px;
+}
+
+.popup-loading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 16px;
+}

@@ -356,16 +356,6 @@ export class JobStatisticsCacheR2 {
   }
 
   /**
-   * Combine metadata and description back into full job
-   */
-  private combineJob(metadata: JobMetadata, description: JobDescription): JobStatistic {
-    return {
-      ...metadata,
-      description: description.description,
-    };
-  }
-
-  /**
    * Add a job to the pending queue (will be saved on save())
    */
   addJob(job: JobStatistic): boolean {
@@ -731,46 +721,38 @@ export class JobStatisticsCacheR2 {
   }
 
   /**
-   * Load all jobs for a specific month
-   * Only fetches descriptions for the last 5 days to avoid large R2 reads and 500 errors.
-   * Older days return jobs with empty descriptions.
+   * Load job metadata for a month.
+   * Options:
+   *   - days: load only the last N days (default: all days)
+   *   - date: load only a specific date (YYYY-MM-DD), overrides days
+   * Descriptions are NEVER loaded here. All returned jobs have description: ''.
    */
-  async loadJobsForMonth(month: string): Promise<JobStatistic[]> {
+  async loadJobsForMonth(
+    month: string,
+    options: { days?: number; date?: string } = {}
+  ): Promise<JobStatistic[]> {
     if (!this.manifest?.months[month]) {
       return [];
     }
 
     const monthData = this.manifest.months[month];
+    let daysToLoad = [...monthData.days];
+
+    if (options.date) {
+      daysToLoad = daysToLoad.filter(d => d.date === options.date);
+    } else if (options.days !== undefined) {
+      const sorted = [...daysToLoad].sort((a, b) => b.date.localeCompare(a.date));
+      daysToLoad = sorted.slice(0, options.days);
+    }
+
     const jobs: JobStatistic[] = [];
 
-    // Only load descriptions for the last 5 files (by recency) to avoid large R2 reads
-    const sortedDays = [...monthData.days].sort((a, b) => b.date.localeCompare(a.date));
-    const recentDates = new Set(sortedDays.slice(0, 5).map(d => d.date));
-
-    // Load each day's data in parallel
-    const dayPromises = monthData.days.map(async (day) => {
-      const shouldLoadDescriptions = recentDates.has(day.date);
-
+    const dayPromises = daysToLoad.map(async (day) => {
       try {
         const metadata = await this.r2.getNDJSONGzipped<JobMetadata>(day.metadata);
-
-        let descMap = new Map<string, JobDescription>();
-        if (shouldLoadDescriptions) {
-          try {
-            const descriptions = await this.r2.getNDJSONGzipped<JobDescription>(day.descriptions);
-            descMap = new Map(descriptions.map(d => [d.id, d]));
-          } catch (descError) {
-            logger.warn(`⚠ Failed to load descriptions for ${day.date}, returning jobs without descriptions:`, descError);
-          }
-        }
-
-        // Combine
-        return metadata.map(m => {
-          const desc = descMap.get(m.id);
-          return this.combineJob(m, desc || { id: m.id, description: '' });
-        });
+        return metadata.map(m => ({ ...m, description: '' } as JobStatistic));
       } catch (error) {
-        logger.warn(`⚠ Failed to load data for ${day.date}, skipping:`, error);
+        logger.warn(`⚠ Failed to load metadata for ${day.date}, skipping:`, error);
         return [];
       }
     });
@@ -780,10 +762,12 @@ export class JobStatisticsCacheR2 {
       jobs.push(...dayJobs);
     }
 
-    // Add pending jobs for this month
-    for (const [dateKey, pendingJobs] of this.pendingJobs.entries()) {
-      if (dateKey.startsWith(month)) {
-        jobs.push(...pendingJobs);
+    // Include pending jobs for this month (only if loading all days)
+    if (!options.date && options.days === undefined) {
+      for (const [dateKey, pendingJobs] of this.pendingJobs.entries()) {
+        if (dateKey.startsWith(month)) {
+          jobs.push(...pendingJobs);
+        }
       }
     }
 
@@ -791,8 +775,30 @@ export class JobStatisticsCacheR2 {
   }
 
   /**
-   * Load jobs for a specific date range
-   * Only fetches descriptions for the last 5 days to avoid large R2 reads.
+   * Load all descriptions for a specific date (YYYY-MM-DD).
+   * Returns a map of jobId → description string.
+   */
+  async loadDescriptionsForDate(dateKey: string): Promise<Map<string, string>> {
+    const [year, month, day] = dateKey.split('-');
+    const descriptionsKey = `descriptions/${year}/${month}/day-${day}.ndjson.gz`;
+
+    try {
+      const descriptions = await this.r2.getNDJSONGzipped<JobDescription>(descriptionsKey);
+      const map = new Map<string, string>();
+      for (const d of descriptions) {
+        map.set(d.id, d.description);
+      }
+      return map;
+    } catch (error: any) {
+      if (error.name === 'NoSuchKey' || error.$metadata?.httpStatusCode === 404) {
+        return new Map();
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Load jobs for a specific date range (metadata only, no descriptions).
    */
   async loadJobsForDateRange(startDate: string, endDate: string): Promise<JobStatistic[]> {
     if (!this.manifest) await this.load();
@@ -801,7 +807,6 @@ export class JobStatisticsCacheR2 {
     const start = new Date(startDate);
     const end = new Date(endDate);
 
-    // Collect all matching days first, then pick the last 5 files for descriptions
     const matchingDays: ManifestDay[] = [];
     for (const [, monthData] of Object.entries(this.manifest!.months)) {
       for (const day of monthData.days) {
@@ -811,27 +816,12 @@ export class JobStatisticsCacheR2 {
         }
       }
     }
-    const sortedMatching = [...matchingDays].sort((a, b) => b.date.localeCompare(a.date));
-    const recentDates = new Set(sortedMatching.slice(0, 5).map(d => d.date));
 
     for (const day of matchingDays) {
       try {
         const metadata = await this.r2.getNDJSONGzipped<JobMetadata>(day.metadata);
-        const shouldLoadDescriptions = recentDates.has(day.date);
-
-        let descMap = new Map<string, JobDescription>();
-        if (shouldLoadDescriptions) {
-          try {
-            const descriptions = await this.r2.getNDJSONGzipped<JobDescription>(day.descriptions);
-            descMap = new Map(descriptions.map(d => [d.id, d]));
-          } catch (descError) {
-            logger.warn(`⚠ Failed to load descriptions for ${day.date}, returning jobs without descriptions:`, descError);
-          }
-        }
-
         for (const m of metadata) {
-          const desc = descMap.get(m.id);
-          jobs.push(this.combineJob(m, desc || { id: m.id, description: '' }));
+          jobs.push({ ...m, description: '' } as JobStatistic);
         }
       } catch (error) {
         logger.warn(`⚠ Failed to load data for ${day.date}, skipping:`, error);

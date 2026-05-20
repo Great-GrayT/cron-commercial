@@ -102,7 +102,6 @@ interface StatsData {
     lastUpdated: string;
     jobCount: number;
     statistics: MonthlyStatistics;
-    jobs?: JobStatistic[];
   };
   summary: {
     totalJobsAllTime: number;
@@ -184,42 +183,63 @@ export default function StatsPage() {
   const hoverTimerRef = useRef<NodeJS.Timeout | null>(null);
   const popupRef = useRef<HTMLDivElement | null>(null);
 
+  // Tracks which dates have had their metadata loaded (Set of "YYYY-MM-DD" strings)
+  const [loadedDates, setLoadedDates] = useState<Set<string>>(new Set());
+  // All loaded job records across all fetched dates, keyed by job id to avoid duplicates
+  const [loadedJobsById, setLoadedJobsById] = useState<Map<string, JobStatistic>>(new Map());
+  // Client-side description cache: jobId → description string
+  const [descriptionCache, setDescriptionCache] = useState<Map<string, string>>(new Map());
+  // Whether we're currently fetching descriptions for a date
+  const [loadingDescriptionsDate, setLoadingDescriptionsDate] = useState<string | null>(null);
+  // Whether all-month metadata has been loaded (for "Load Full Month" button)
+  const [fullMonthLoaded, setFullMonthLoaded] = useState(false);
+  const [fullMonthLoading, setFullMonthLoading] = useState(false);
+
   useEffect(() => {
     loadStatistics();
   }, []);
 
-  // After stats load, fetch jobs for the current month in the background
+  // After stats load, fetch only the last 3 days of metadata for the current month
   useEffect(() => {
-    if (!statsData || statsData.currentMonth.jobs !== undefined) return;
+    if (!statsData) return;
     const month = statsData.currentMonth.month;
     setJobsLoading(true);
-    fetch(`/api/stats/jobs?month=${encodeURIComponent(month)}`)
+    fetch(`/api/stats/jobs?month=${encodeURIComponent(month)}&days=3`)
       .then(r => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
       .then(data => {
-        setStatsData(prev => {
-          if (!prev) return prev;
-          return { ...prev, currentMonth: { ...prev.currentMonth, jobs: data.jobs ?? [] } };
+        const jobs: JobStatistic[] = data.jobs ?? [];
+        const newById = new Map<string, JobStatistic>();
+        const newDates = new Set<string>();
+        jobs.forEach(job => {
+          newById.set(job.id, job);
+          const d = job.extractedDate?.split('T')[0];
+          if (d) newDates.add(d);
         });
+        setLoadedJobsById(newById);
+        setLoadedDates(newDates);
       })
       .catch(() => {
-        // Non-fatal: jobs table will be empty but charts still work
-        setStatsData(prev => {
-          if (!prev) return prev;
-          return { ...prev, currentMonth: { ...prev.currentMonth, jobs: [] } };
-        });
+        // Non-fatal: table will be empty but charts still work
       })
       .finally(() => setJobsLoading(false));
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [statsData]);
+  }, [statsData?.currentMonth?.month]); // Only re-run if month changes
 
   // Debounce text search to avoid filtering on every keystroke
   useEffect(() => {
     const timer = setTimeout(() => {
       setDebouncedTextSearch(textSearch);
-    }, 300); // 300ms delay
+    }, 300);
 
     return () => clearTimeout(timer);
   }, [textSearch]);
+
+  // When text search becomes active and a date is already selected, load descriptions for that date
+  useEffect(() => {
+    if (debouncedTextSearch && selectedDate && selectedDateAffectsJobs) {
+      loadDescriptionsForDate(selectedDate);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [debouncedTextSearch, selectedDate]);
 
   const loadStatistics = async (retries = 2) => {
     setLoading(true);
@@ -241,6 +261,71 @@ export default function StatsPage() {
       }
     }
     setLoading(false);
+  };
+
+  const loadDateMetadata = async (date: string) => {
+    if (loadedDates.has(date) || !statsData) return;
+    const month = date.substring(0, 7);
+    try {
+      const r = await fetch(`/api/stats/jobs?month=${encodeURIComponent(month)}&date=${encodeURIComponent(date)}`);
+      if (!r.ok) return;
+      const data = await r.json();
+      const jobs: JobStatistic[] = data.jobs ?? [];
+      setLoadedJobsById(prev => {
+        const next = new Map(prev);
+        jobs.forEach(job => next.set(job.id, job));
+        return next;
+      });
+      setLoadedDates(prev => new Set([...prev, date]));
+    } catch {
+      // Non-fatal
+    }
+  };
+
+  const loadFullMonth = async () => {
+    if (fullMonthLoaded || fullMonthLoading || !statsData) return;
+    setFullMonthLoading(true);
+    const month = statsData.currentMonth.month;
+    try {
+      const r = await fetch(`/api/stats/jobs?month=${encodeURIComponent(month)}&all=true`);
+      if (!r.ok) return;
+      const data = await r.json();
+      const jobs: JobStatistic[] = data.jobs ?? [];
+      const newById = new Map<string, JobStatistic>(loadedJobsById);
+      const newDates = new Set<string>(loadedDates);
+      jobs.forEach(job => {
+        newById.set(job.id, job);
+        const d = job.extractedDate?.split('T')[0];
+        if (d) newDates.add(d);
+      });
+      setLoadedJobsById(newById);
+      setLoadedDates(newDates);
+      setFullMonthLoaded(true);
+    } catch {
+      // Non-fatal
+    } finally {
+      setFullMonthLoading(false);
+    }
+  };
+
+  const loadDescriptionsForDate = async (date: string) => {
+    if (loadingDescriptionsDate === date || !date) return;
+    setLoadingDescriptionsDate(date);
+    try {
+      const r = await fetch(`/api/stats/description?date=${encodeURIComponent(date)}`);
+      if (!r.ok) return;
+      const data = await r.json();
+      const items: Array<{ id: string; description: string }> = data.descriptions ?? [];
+      setDescriptionCache(prev => {
+        const next = new Map(prev);
+        items.forEach(d => next.set(d.id, d.description));
+        return next;
+      });
+    } catch {
+      // Non-fatal
+    } finally {
+      setLoadingDescriptionsDate(null);
+    }
   };
 
   // Filter management
@@ -444,18 +529,25 @@ export default function StatsPage() {
   // Filter jobs based on active filters and text search (MEMOIZED for performance)
   const filteredJobs = useMemo(() => {
     if (!statsData) return [];
-    // Jobs are only available for the current month; archive months have no individual records
     if (selectedArchiveMonth) return [];
-    const jobs = statsData.currentMonth.jobs;
-    if (!jobs?.length) return [];
+
+    // Build array from loaded metadata, merging in any cached descriptions
+    const jobs = Array.from(loadedJobsById.values()).map(job => ({
+      ...job,
+      description: descriptionCache.get(job.id) || '',
+    }));
+
+    if (!jobs.length) return [];
+
     return jobs.filter(job => {
-      // Text search filter (searches title, company, description, keywords)
+      // Text search: searches title, company, keywords always.
+      // Searches description only if it has been loaded (non-empty).
       if (debouncedTextSearch) {
         const searchLower = debouncedTextSearch.toLowerCase();
         const matchesSearch =
           job.title.toLowerCase().includes(searchLower) ||
           job.company.toLowerCase().includes(searchLower) ||
-          job.description.toLowerCase().includes(searchLower) ||
+          (job.description && job.description.toLowerCase().includes(searchLower)) ||
           job.keywords.some(k => k.toLowerCase().includes(searchLower));
         if (!matchesSearch) return false;
       }
@@ -521,239 +613,13 @@ export default function StatsPage() {
       }
       return true;
     });
-  }, [statsData, selectedArchiveMonth, debouncedTextSearch, activeFilters, selectedDate, selectedDateAffectsJobs]); // Recalculate when filters change
+  }, [statsData, selectedArchiveMonth, debouncedTextSearch, activeFilters, selectedDate, selectedDateAffectsJobs, loadedJobsById, descriptionCache]);
 
-  // Rebuild salary statistics from a set of jobs
-  const rebuildSalaryStats = (jobs: JobStatistic[]): SalaryStats | undefined => {
-    const jobsWithSalary = jobs.filter(j => j.salary && (j.salary.min || j.salary.max));
-    if (jobsWithSalary.length === 0) return undefined;
-
-    const salaryStats: SalaryStats = {
-      totalWithSalary: jobsWithSalary.length,
-      averageSalary: null,
-      medianSalary: null,
-      byIndustry: {},
-      bySeniority: {},
-      byLocation: {},
-      byCountry: {},
-      byCity: {},
-      byCurrency: {},
-      salaryRanges: { '0-30k': 0, '30-50k': 0, '50-75k': 0, '75-100k': 0, '100-150k': 0, '150k+': 0 },
-    };
-
-    const salaries: number[] = [];
-    const groups: Record<string, Record<string, number[]>> = {
-      industry: {}, seniority: {}, location: {}, country: {}, city: {},
-    };
-
-    jobsWithSalary.forEach(job => {
-      if (!job.salary) return;
-      const mid = job.salary.min !== null && job.salary.max !== null
-        ? (job.salary.min + job.salary.max) / 2
-        : (job.salary.min || job.salary.max || 0);
-      if (mid <= 0) return;
-
-      salaries.push(mid);
-      if (job.industry) { if (!groups.industry[job.industry]) groups.industry[job.industry] = []; groups.industry[job.industry].push(mid); }
-      if (job.seniority) { if (!groups.seniority[job.seniority]) groups.seniority[job.seniority] = []; groups.seniority[job.seniority].push(mid); }
-      if (job.location) { if (!groups.location[job.location]) groups.location[job.location] = []; groups.location[job.location].push(mid); }
-      if (job.country) { if (!groups.country[job.country]) groups.country[job.country] = []; groups.country[job.country].push(mid); }
-      const nc = normalizeCity(job.city);
-      if (nc) { if (!groups.city[nc]) groups.city[nc] = []; groups.city[nc].push(mid); }
-      if (job.salary.currency) salaryStats.byCurrency[job.salary.currency] = (salaryStats.byCurrency[job.salary.currency] || 0) + 1;
-
-      if (mid < 30000) salaryStats.salaryRanges['0-30k']++;
-      else if (mid < 50000) salaryStats.salaryRanges['30-50k']++;
-      else if (mid < 75000) salaryStats.salaryRanges['50-75k']++;
-      else if (mid < 100000) salaryStats.salaryRanges['75-100k']++;
-      else if (mid < 150000) salaryStats.salaryRanges['100-150k']++;
-      else salaryStats.salaryRanges['150k+']++;
-    });
-
-    if (salaries.length > 0) {
-      salaryStats.averageSalary = Math.round(salaries.reduce((a, b) => a + b, 0) / salaries.length);
-      const sorted = [...salaries].sort((a, b) => a - b);
-      const mid = Math.floor(sorted.length / 2);
-      salaryStats.medianSalary = sorted.length % 2 === 0
-        ? Math.round((sorted[mid - 1] + sorted[mid]) / 2)
-        : Math.round(sorted[mid]);
-    }
-
-    const calcGroup = (g: Record<string, number[]>) => {
-      const r: Record<string, { avg: number; median: number; count: number }> = {};
-      for (const [k, vals] of Object.entries(g)) {
-        if (vals.length === 0) continue;
-        const s = [...vals].sort((a, b) => a - b);
-        const m = Math.floor(s.length / 2);
-        r[k] = {
-          avg: Math.round(vals.reduce((a, b) => a + b, 0) / vals.length),
-          median: s.length % 2 === 0 ? Math.round((s[m - 1] + s[m]) / 2) : Math.round(s[m]),
-          count: vals.length,
-        };
-      }
-      return r;
-    };
-
-    salaryStats.byIndustry = calcGroup(groups.industry);
-    salaryStats.bySeniority = calcGroup(groups.seniority);
-    salaryStats.byLocation = calcGroup(groups.location);
-    salaryStats.byCountry = calcGroup(groups.country);
-    salaryStats.byCity = calcGroup(groups.city);
-
-    return salaryStats;
-  };
-
-  // Apply filters to statistics (MEMOIZED - this is expensive!)
+  // Charts always show pre-computed aggregated data regardless of active filters (Option D).
+  // Filters only affect the jobs table (filteredJobs), not the chart distributions.
   const filteredStatistics = useMemo((): MonthlyStatistics | null => {
-    const stats = getActiveStatistics();
-    if (!stats || !hasJobFilters) return stats;
-
-    // Archive months have no individual job records — return stats unchanged
-    if (selectedArchiveMonth) return stats;
-
-    // In ALL mode: rebuild distribution charts from current-month filtered jobs so every
-    // chart reflects the active filter. Velocity chart (byDate) keeps all-time aggregated
-    // data so the full posting history remains visible. byHour/byDayHour are rebuilt from
-    // filtered jobs so PUBLICATION TIMES and POSTING HEATMAP match the active filter.
-    if (useAggregated) {
-      const filtered: MonthlyStatistics = {
-        totalJobs: filteredJobs.length,
-        byDate: stats.byDate,      // all-time aggregated — velocity chart stays full-history
-        byIndustry: {},
-        byCertificate: {},
-        byKeyword: {},
-        bySeniority: {},
-        byLocation: {},
-        byCountry: {},
-        byCity: {},
-        byRegion: {},
-        byCompany: {},
-        bySoftware: {},
-        byProgrammingSkill: {},
-        byYearsExperience: {},
-        byAcademicDegree: {},
-        byRoleType: {},
-        byRoleCategory: {},
-        byHour: {},
-        byDayHour: {},
-      };
-      filteredJobs.forEach(job => {
-        filtered.byIndustry[job.industry] = (filtered.byIndustry[job.industry] || 0) + 1;
-        filtered.bySeniority[job.seniority] = (filtered.bySeniority[job.seniority] || 0) + 1;
-        filtered.byLocation[job.location] = (filtered.byLocation[job.location] || 0) + 1;
-        if (job.country) filtered.byCountry[job.country] = (filtered.byCountry[job.country] || 0) + 1;
-        const normalizedCity = normalizeCity(job.city);
-        if (normalizedCity) filtered.byCity[normalizedCity] = (filtered.byCity[normalizedCity] || 0) + 1;
-        if (job.region) filtered.byRegion[job.region] = (filtered.byRegion[job.region] || 0) + 1;
-        filtered.byCompany[job.company] = (filtered.byCompany[job.company] || 0) + 1;
-        job.certificates.forEach(cert => { filtered.byCertificate[cert] = (filtered.byCertificate[cert] || 0) + 1; });
-        job.keywords.forEach(kw => { filtered.byKeyword[kw] = (filtered.byKeyword[kw] || 0) + 1; });
-        if (job.software) job.software.forEach(s => { filtered.bySoftware![s] = (filtered.bySoftware![s] || 0) + 1; });
-        if (job.programmingSkills) job.programmingSkills.forEach(s => { filtered.byProgrammingSkill![s] = (filtered.byProgrammingSkill![s] || 0) + 1; });
-        if (job.yearsExperience) filtered.byYearsExperience![job.yearsExperience] = (filtered.byYearsExperience![job.yearsExperience] || 0) + 1;
-        if (job.academicDegrees) job.academicDegrees.forEach(d => { filtered.byAcademicDegree![d] = (filtered.byAcademicDegree![d] || 0) + 1; });
-        if (job.roleType) filtered.byRoleType![job.roleType] = (filtered.byRoleType![job.roleType] || 0) + 1;
-        if (job.roleCategory) filtered.byRoleCategory![job.roleCategory] = (filtered.byRoleCategory![job.roleCategory] || 0) + 1;
-        if (job.postedDate) {
-          try {
-            const d = new Date(job.postedDate);
-            if (!isNaN(d.getTime())) {
-              const hour = String(d.getUTCHours()).padStart(2, '0');
-              filtered.byHour![hour] = (filtered.byHour![hour] || 0) + 1;
-              const dayHour = `${d.getUTCDay()}-${d.getUTCHours()}`;
-              filtered.byDayHour![dayHour] = (filtered.byDayHour![dayHour] || 0) + 1;
-            }
-          } catch { /* skip */ }
-        }
-      });
-      filtered.salaryStats = rebuildSalaryStats(filteredJobs);
-      return filtered;
-    }
-
-    // In CURRENT mode: rebuild statistics from filtered jobs
-    const filtered: MonthlyStatistics = {
-      totalJobs: filteredJobs.length,
-      byDate: {},
-      byIndustry: {},
-      byCertificate: {},
-      byKeyword: {},
-      bySeniority: {},
-      byLocation: {},
-      byCountry: {},
-      byCity: {},
-      byRegion: {},
-      byCompany: {},
-      bySoftware: {},
-      byProgrammingSkill: {},
-      byYearsExperience: {},
-      byAcademicDegree: {},
-      byRoleType: {},
-      byRoleCategory: {},
-      byHour: {},
-      byDayHour: {},
-    };
-
-    filteredJobs.forEach(job => {
-      const date = job.extractedDate.split('T')[0];
-      filtered.byDate[date] = (filtered.byDate[date] || 0) + 1;
-      filtered.byIndustry[job.industry] = (filtered.byIndustry[job.industry] || 0) + 1;
-      filtered.bySeniority[job.seniority] = (filtered.bySeniority[job.seniority] || 0) + 1;
-      filtered.byLocation[job.location] = (filtered.byLocation[job.location] || 0) + 1;
-      if (job.country) filtered.byCountry[job.country] = (filtered.byCountry[job.country] || 0) + 1;
-      const normalizedCity = normalizeCity(job.city);
-      if (normalizedCity) filtered.byCity[normalizedCity] = (filtered.byCity[normalizedCity] || 0) + 1;
-      if (job.region) filtered.byRegion[job.region] = (filtered.byRegion[job.region] || 0) + 1;
-      filtered.byCompany[job.company] = (filtered.byCompany[job.company] || 0) + 1;
-      job.certificates.forEach(cert => {
-        filtered.byCertificate[cert] = (filtered.byCertificate[cert] || 0) + 1;
-      });
-      job.keywords.forEach(keyword => {
-        filtered.byKeyword[keyword] = (filtered.byKeyword[keyword] || 0) + 1;
-      });
-      if (job.software) {
-        job.software.forEach(soft => {
-          filtered.bySoftware![soft] = (filtered.bySoftware![soft] || 0) + 1;
-        });
-      }
-      if (job.programmingSkills) {
-        job.programmingSkills.forEach(skill => {
-          filtered.byProgrammingSkill![skill] = (filtered.byProgrammingSkill![skill] || 0) + 1;
-        });
-      }
-      if (job.yearsExperience) {
-        filtered.byYearsExperience![job.yearsExperience] = (filtered.byYearsExperience![job.yearsExperience] || 0) + 1;
-      }
-      if (job.academicDegrees) {
-        job.academicDegrees.forEach(degree => {
-          filtered.byAcademicDegree![degree] = (filtered.byAcademicDegree![degree] || 0) + 1;
-        });
-      }
-      if (job.roleType) {
-        filtered.byRoleType![job.roleType] = (filtered.byRoleType![job.roleType] || 0) + 1;
-      }
-      if (job.roleCategory) {
-        filtered.byRoleCategory![job.roleCategory] = (filtered.byRoleCategory![job.roleCategory] || 0) + 1;
-      }
-
-      // Rebuild time data
-      if (job.postedDate) {
-        try {
-          const d = new Date(job.postedDate);
-          if (!isNaN(d.getTime())) {
-            const hour = String(d.getUTCHours()).padStart(2, '0');
-            filtered.byHour![hour] = (filtered.byHour![hour] || 0) + 1;
-            const dayHour = `${d.getUTCDay()}-${d.getUTCHours()}`;
-            filtered.byDayHour![dayHour] = (filtered.byDayHour![dayHour] || 0) + 1;
-          }
-        } catch { /* skip */ }
-      }
-    });
-
-    // Rebuild salary stats from filtered jobs
-    filtered.salaryStats = rebuildSalaryStats(filteredJobs);
-
-    return filtered;
-  }, [filteredJobs, hasJobFilters, useAggregated, selectedArchiveMonth, statsData, activeFilters]); // Memoize based on dependencies
+    return getActiveStatistics();
+  }, [statsData, viewMode, selectedArchiveMonth]);
 
   // Helper function to check if value should be filtered out
   const shouldFilterOut = (value: string): boolean => {
@@ -997,7 +863,14 @@ export default function StatsPage() {
     if (!data || !data.activePayload || !data.activePayload[0]) return;
     const clickedDate = data.activePayload[0].payload.rawDate;
     if (!clickedDate) return;
-    setSelectedDate(selectedDate === clickedDate ? null : clickedDate);
+    const newDate = selectedDate === clickedDate ? null : clickedDate;
+    setSelectedDate(newDate);
+    if (newDate) {
+      loadDateMetadata(newDate);
+      if (debouncedTextSearch) {
+        loadDescriptionsForDate(newDate);
+      }
+    }
   };
 
   // Handler for country/city clicks
@@ -1115,38 +988,12 @@ export default function StatsPage() {
   const hasRoleTypeData = filteredStats?.byRoleType && Object.keys(filteredStats.byRoleType).length > 0;
   const hasRoleCategoryData = filteredStats?.byRoleCategory && Object.keys(filteredStats.byRoleCategory).length > 0;
 
-  // Get publication time analysis data.
-  // Prefers true 10-min resolution from individual jobs when available;
-  // falls back to honest hourly bars from byHour (no fake sub-hour splitting).
   const getPublicationTimeData = () => {
-    // If individual jobs are loaded, use real 10-min resolution.
-    if (filteredJobs.length > 0) {
-      const timeSlots: Record<string, number> = {};
-      filteredJobs.forEach(job => {
-        const date = new Date(job.postedDate);
-        const hours = date.getUTCHours();
-        const minutes = date.getUTCMinutes();
-        const roundedMinutes = Math.floor(minutes / 10) * 10;
-        const timeKey = `${String(hours).padStart(2, '0')}:${String(roundedMinutes).padStart(2, '0')}`;
-        timeSlots[timeKey] = (timeSlots[timeKey] || 0) + 1;
-      });
-      if (Object.keys(timeSlots).length > 0) {
-        return Object.entries(timeSlots)
-          .map(([time, count]) => ({ time, count }))
-          .sort((a, b) => a.time.localeCompare(b.time));
-      }
-    }
-
-    // Fallback: use pre-aggregated hourly counts as honest hourly bars.
-    // One bar per hour — no synthetic sub-hour splitting.
     const stats = filteredStats;
-    if (stats?.byHour && Object.keys(stats.byHour).length > 0) {
-      return Object.entries(stats.byHour)
-        .map(([hour, count]) => ({ time: hour.padStart(2, '0') + ':00', count }))
-        .sort((a, b) => a.time.localeCompare(b.time));
-    }
-
-    return [];
+    if (!stats?.byHour || Object.keys(stats.byHour).length === 0) return [];
+    return Object.entries(stats.byHour)
+      .map(([hour, count]) => ({ time: hour.padStart(2, '0') + ':00', count }))
+      .sort((a, b) => a.time.localeCompare(b.time));
   };
 
   // Get jobs sorted by publish time (most recent first)
@@ -1238,6 +1085,8 @@ export default function StatsPage() {
           availableOptions={availableFilterOptions}
           textSearch={textSearch}
           setTextSearch={setTextSearch}
+          selectedDate={selectedDate}
+          loadingDescriptions={loadingDescriptionsDate !== null}
         />
       )}
 
@@ -1272,8 +1121,11 @@ export default function StatsPage() {
               <div className="metric-compact">
                 <div className="metric-compact-label">FILTERED</div>
                 <div className="metric-compact-value highlight">
-                  <AnimatedNumber value={filteredStats?.totalJobs || 0} />
+                  <AnimatedNumber value={filteredJobs.length} />
                 </div>
+                {hasActiveFilters && (
+                  <div className="metric-compact-hint">loaded days</div>
+                )}
               </div>
               <div className="metric-compact">
                 <div className="metric-compact-label">ARCHIVES</div>
@@ -1500,7 +1352,7 @@ export default function StatsPage() {
             </div>
             <div className="chart-container compact chart-container-h240">
               <PostingHeatmap
-                jobs={filteredJobs}
+                jobs={[]}
                 byDayHour={filteredStats?.byDayHour}
               />
             </div>
@@ -1703,7 +1555,20 @@ export default function StatsPage() {
             <div className="panel-header">
               <Briefcase size={14} />
               <span>RECENT JOBS (TOP 100)</span>
-              {jobsLoading && <Loader2 size={12} className="animate-spin panel-header-spinner" />}
+              {(jobsLoading || fullMonthLoading) && <Loader2 size={12} className="animate-spin panel-header-spinner" />}
+              {!fullMonthLoaded && !fullMonthLoading && !jobsLoading && (
+                <button
+                  type="button"
+                  className="terminal-btn-small"
+                  onClick={loadFullMonth}
+                  title="Load all jobs for this month"
+                >
+                  LOAD FULL MONTH
+                </button>
+              )}
+              {fullMonthLoaded && (
+                <span className="panel-header-note">FULL MONTH LOADED</span>
+              )}
             </div>
             <div className="jobs-table-container">
               <table className="jobs-table-full">
@@ -1738,10 +1603,12 @@ export default function StatsPage() {
                           // Show popup after 3 seconds
                           hoverTimerRef.current = setTimeout(() => {
                             setHoveredJob(job);
-                            setPopupPosition({
-                              x: window.innerWidth / 2 - 200,
-                              y: window.innerHeight / 2 - 250
-                            });
+                            setPopupPosition({ x: window.innerWidth / 2 - 200, y: window.innerHeight / 2 - 250 });
+                            // Trigger description fetch for this job's date
+                            const dateKey = job.extractedDate?.split('T')[0];
+                            if (dateKey) {
+                              loadDescriptionsForDate(dateKey);
+                            }
                           }, 3000);
                         }}
                         onMouseLeave={(e) => {
@@ -2177,14 +2044,21 @@ export default function StatsPage() {
             </button>
           </div>
           {/* Scrollable content area */}
-          <div
-            className="job-popup-content"
-            onWheel={(e) => {
-              // Stop propagation to prevent main page from scrolling
-              e.stopPropagation();
-            }}
-          >
-            <div dangerouslySetInnerHTML={{ __html: hoveredJob.description }} />
+          <div className="job-popup-content" onWheel={(e) => e.stopPropagation()}>
+            {(() => {
+              const desc = descriptionCache.get(hoveredJob.id) || hoveredJob.description;
+              const dateKey = hoveredJob.extractedDate?.split('T')[0];
+              const isLoading = loadingDescriptionsDate === dateKey && !desc;
+              if (isLoading) {
+                return (
+                  <div className="popup-loading">
+                    <Loader2 size={16} className="spin" />
+                    <span>Loading description...</span>
+                  </div>
+                );
+              }
+              return <div dangerouslySetInnerHTML={{ __html: desc || '<p>No description available.</p>' }} />;
+            })()}
           </div>
         </div>
       )}
